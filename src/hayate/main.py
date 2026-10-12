@@ -4,6 +4,10 @@ from hayate.ui.main_window import MainWindow
 
 def main():
     app = QApplication(sys.argv)
+  from PyQt6.QtGui import QIcon
+  icon_file = Path(__file__).resolve().parents[2] / 'app_icon.png'
+  if icon_file.exists():
+      app.setWindowIcon(QIcon(str(icon_file)))
     # Neutral style base prevents theme engine border artifacts on KDE
     app.setStyle("Fusion")
     app.setApplicationName("hayate")

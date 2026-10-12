@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-70 -70 140 140" width="512" height="512">
+  <!-- Top Leaf (Light Green) -->
+  <path d="M -25 -42 C -5 -60 15 -60 35 -42 C 10 -48 -10 -48 -25 -42 Z" fill="#78b843" />
+  
+  <!-- Upper Wave (Medium Green) -->
+  <path d="M -48 -28 C -20 -44 20 -36 48 -22 C 38 -27 5 -30 -35 -21 Z" fill="#329b44" />
+  
+  <!-- Middle Wave (Dark Green) -->
+  <path d="M -48 -12 C -15 -28 25 -21 45 7 C 32 -7 0 -12 -35 -5 Z" fill="#00833e" />
+  
+  <!-- Bottom Swirl / Swoosh (Cyan) -->
+  <path d="M -52 -35 C -62 7 -15 38 25 10 C 12 7 5 3 -5 8 C -15 10 -38 17 -32 -15 Z" fill="#00aee6" />
+</svg>
