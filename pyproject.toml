@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hayate"
+version = "0.1.0"
+description = "Fast, native anime catalog and desktop streaming client"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt6>=6.5.0",
+    "requests>=2.28.0",
+    "yt-dlp>=2023.0.0",
+]
+
+[project.scripts]
+hayate = "hayate.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
