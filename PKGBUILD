@@ -1,12 +1,12 @@
 # Maintainer: Piyush <https://github.com/Piyush-1927>
 pkgname=hayate-git
-pkgver=0.1.0
+pkgver=0.1.0.r8.37b8cd7
 pkgrel=1
 pkgdesc="Fast, native anime catalog and desktop streaming client"
 arch=('any')
 url="https://github.com/Piyush-1927/Hayate"
 license=('GPL-3.0-or-later')
-depends=('python' 'python-pyqt6' 'python-requests' 'yt-dlp' 'qt6-multimedia-ffmpeg')
+depends=('python' 'python-pyqt6' 'python-requests' 'yt-dlp' 'python-httpx' 'qt6-multimedia-ffmpeg')
 makedepends=('git' 'python-build' 'python-installer' 'python-setuptools' 'python-wheel')
 provides=('hayate')
 conflicts=('hayate')

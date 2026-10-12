@@ -38,3 +38,18 @@ venv/
 ENV/
 .DS_Store
 Thumbs.db
+# makepkg & Arch artifacts
+*.pkg.tar.*
+pkg/
+src/
+/Hayate/
+
+# Python packaging & virtualenvs
+dist/
+build/
+*.egg-info/
+__pycache__/
+
+# Flatpak build tree
+build-dir/
+.flatpak-builder/
