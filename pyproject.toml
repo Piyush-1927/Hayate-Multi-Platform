@@ -7,6 +7,7 @@ name = "hayate"
 version = "0.1.0"
 description = "Fast, native anime catalog and desktop streaming client"
 readme = "README.md"
+license = {text = "GPL-3.0-or-later"}
 requires-python = ">=3.10"
 dependencies = [
     "PyQt6>=6.5.0",
