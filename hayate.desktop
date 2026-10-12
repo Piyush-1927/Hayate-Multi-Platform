@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Hayate
+GenericName=Anime Client
+Comment=Fast, native anime catalog and desktop player
+Exec=hayate %u
+Icon=hayate
+Terminal=false
+Categories=AudioVideo;Video;Player;Network;
+MimeType=x-scheme-handler/hayate;
+Keywords=anime;anilist;player;streaming;
+StartupNotify=true
+StartupWMClass=hayate
