@@ -196,6 +196,7 @@ class PlayerView(QWidget):
         self.media_player = None
         self._playback_platform = None
         self._playback_error = None
+        self._playback_shutdown = False
 
         # Floating bar for Fullscreen Mode
         self.floating_bar = FloatingControlBar(self)
@@ -536,14 +537,18 @@ class PlayerView(QWidget):
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Up), self, lambda: self._adjust_volume(5), context=ctx)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Down), self, lambda: self._adjust_volume(-5), context=ctx)
 
+    def _connect_player_signals(self):
+        """Connect signals belonging to the current playback adapter."""
+        player = self.media_player
+        if player is None:
+            return
+        player.positionChanged.connect(self._on_position_changed)
+        player.durationChanged.connect(self._on_duration_changed)
+        player.playbackStateChanged.connect(self._on_playback_state_changed)
+        player.errorOccurred.connect(self._on_stream_error)
+
     def _connect_signals(self):
-        if self.media_player is not None:
-            self.media_player.positionChanged.connect(self._on_position_changed)
-            self.media_player.durationChanged.connect(self._on_duration_changed)
-            self.media_player.playbackStateChanged.connect(
-                self._on_playback_state_changed
-            )
-            self.media_player.errorOccurred.connect(self._on_stream_error)
+        self._connect_player_signals()
 
         # Floating bar signals
         self.floating_bar.btn_backward.clicked.connect(lambda: self._seek_relative(-10000))
@@ -660,6 +665,17 @@ class PlayerView(QWidget):
             self.cursor_idle_timer.start()
 
     def open_anime(self, anime: AnimeMedia, ep: int):
+        # Recreate libmpv after a previous session was shut down.
+        if self._playback_shutdown:
+            self._playback_shutdown = False
+            self._playback_error = None
+            self._initialize_playback()
+            if self.media_player is not None:
+                self._connect_player_signals()
+            else:
+                # Permit another attempt if initialization failed.
+                self._playback_shutdown = True
+
         self.anime = anime
         self.active_ep = ep
         self.current_chunk = (ep - 1) // 100
@@ -899,8 +915,7 @@ class PlayerView(QWidget):
         w = self.window()
         if w.isFullScreen():
             self._toggle_fullscreen()
-        if self.media_player is not None:
-            self.media_player.stop()
+        self._shutdown_playback()
         self.back_requested.emit()
 
     def _shutdown_playback(self):

@@ -1151,6 +1151,13 @@ class MainWindow(QMainWindow):
         self.details_view.auto_play_episode(episode)
 
     def closeEvent(self, event: QCloseEvent):
+        # Terminate libmpv before the native video surface is destroyed.
+        try:
+            self.player_view._shutdown_playback()
+        except Exception:
+            import logging
+            logging.exception("Error shutting down playback on application exit")
+
         _SPOTLIGHT_PIX_CACHE.clear()
         try:
             self.spotlight_timer.stop()
