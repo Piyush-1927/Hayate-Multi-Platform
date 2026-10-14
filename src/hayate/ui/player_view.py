@@ -6,8 +6,9 @@ from PyQt6.QtWidgets import (
     QLabel, QFrame, QScrollArea, QListWidget, QListWidgetItem,
     QLineEdit, QComboBox, QSlider, QMessageBox, QProgressBar
 )
-from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PyQt6.QtMultimediaWidgets import QVideoWidget
+from PyQt6.QtMultimedia import QMediaPlayer
+from hayate.core.playback_platform import detect_playback_platform
+from hayate.core.mpv_adapter import MpvPlayerAdapter
 
 from hayate.core.anilist import AnimeMedia
 from hayate.core.player import PlayerController
@@ -23,23 +24,52 @@ def format_time(ms: int) -> str:
     return f"{m:02d}:{s:02d}"
 
 
-class VideoOverlayWidget(QVideoWidget):
+class _NativeVideoSurface(QWidget):
+    """Dedicated native child window used by libmpv for video output."""
+
+    doubleClickedCenter = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        self.setMouseTracking(True)
+        self.setStyleSheet("background-color: black;")
+
+    def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            center = QPoint(self.width() // 2, self.height() // 2)
+            dist_sq = (
+                (event.position().x() - center.x()) ** 2
+                + (event.position().y() - center.y()) ** 2
+            )
+            if dist_sq <= 160 ** 2:
+                self.doubleClickedCenter.emit()
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
+
+class VideoOverlayWidget(QWidget):
+    """Video container with a stable native child surface for embedding."""
+
     doubleClickedCenter = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMouseTracking(True)
-        self.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        self.setStyleSheet("background-color: black;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-    def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent):
-        if event.button() == Qt.MouseButton.LeftButton:
-            center = QPoint(self.width() // 2, self.height() // 2)
-            dist_sq = (event.pos().x() - center.x()) ** 2 + (event.pos().y() - center.y()) ** 2
-            if dist_sq <= (160 ** 2):
-                self.doubleClickedCenter.emit()
-                event.accept()
-                return
-        super().mouseDoubleClickEvent(event)
+        self.native_surface = _NativeVideoSurface(self)
+        self.native_surface.doubleClickedCenter.connect(
+            self.doubleClickedCenter.emit
+        )
+        layout.addWidget(self.native_surface)
 
 
 class FloatingControlBar(QtWidgets.QWidget):
@@ -161,10 +191,11 @@ class PlayerView(QWidget):
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        # Media Player Engine
-        self.audio_output = QAudioOutput(self)
-        self.media_player = QMediaPlayer(self)
-        self.media_player.setAudioOutput(self.audio_output)
+        # Playback engine is initialized after the native video surface exists.
+        self.audio_output = None
+        self.media_player = None
+        self._playback_platform = None
+        self._playback_error = None
 
         # Floating bar for Fullscreen Mode
         self.floating_bar = FloatingControlBar(self)
@@ -189,8 +220,42 @@ class PlayerView(QWidget):
         self._stream_failed.connect(self._on_stream_error)
 
         self._build_ui()
+        self._initialize_playback()
         self._setup_shortcuts()
         self._connect_signals()
+
+    def _initialize_playback(self):
+        """Detect the desktop backend once and initialize embedded libmpv."""
+        try:
+            self._playback_platform = detect_playback_platform()
+
+            if not self._playback_platform.supported:
+                raise RuntimeError(
+                    self._playback_platform.reason
+                    or "Native video embedding is not supported on this session."
+                )
+
+            # Force creation of the dedicated native child window before mpv starts.
+            surface = self.video_widget.native_surface
+            surface.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+            native_id = int(surface.winId())
+
+            self.media_player = MpvPlayerAdapter(
+                platform=self._playback_platform,
+                native_id=native_id,
+                parent=self,
+            )
+            self.audio_output = self.media_player.audio_output
+
+        except Exception as exc:
+            self.media_player = None
+            self.audio_output = None
+            self._playback_error = str(exc)
+            self.placeholder_label.setText(
+                "Embedded playback could not initialize.\n"
+                + self._playback_error
+            )
+            self.placeholder_label.show()
 
     def _build_ui(self):
         self.root_layout = QVBoxLayout(self)
@@ -353,7 +418,6 @@ class PlayerView(QWidget):
 
         self.video_widget = VideoOverlayWidget(self.card_viewport)
         self.video_widget.doubleClickedCenter.connect(self._toggle_fullscreen)
-        self.media_player.setVideoOutput(self.video_widget)
         v_layout.addWidget(self.video_widget)
 
         self.placeholder_label = QLabel("Select an episode to begin playback.", self.card_viewport)
@@ -473,9 +537,13 @@ class PlayerView(QWidget):
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Down), self, lambda: self._adjust_volume(-5), context=ctx)
 
     def _connect_signals(self):
-        self.media_player.positionChanged.connect(self._on_position_changed)
-        self.media_player.durationChanged.connect(self._on_duration_changed)
-        self.media_player.playbackStateChanged.connect(self._on_playback_state_changed)
+        if self.media_player is not None:
+            self.media_player.positionChanged.connect(self._on_position_changed)
+            self.media_player.durationChanged.connect(self._on_duration_changed)
+            self.media_player.playbackStateChanged.connect(
+                self._on_playback_state_changed
+            )
+            self.media_player.errorOccurred.connect(self._on_stream_error)
 
         # Floating bar signals
         self.floating_bar.btn_backward.clicked.connect(lambda: self._seek_relative(-10000))
@@ -680,6 +748,11 @@ class PlayerView(QWidget):
     def play_episode(self, ep: int):
         if not self.anime:
             return
+        if self.media_player is None:
+            self._on_stream_error(
+                self._playback_error or "The playback engine is unavailable."
+            )
+            return
         self.active_ep = ep
         self.title_lbl.setText(f"{self.anime.title}  —  EP {ep}")
         self.progress_bar.setVisible(True)
@@ -715,6 +788,12 @@ class PlayerView(QWidget):
 
     def _on_stream_ready(self, anime, ep: int, url: str):
         self.progress_bar.setVisible(False)
+        if self.media_player is None:
+            self._on_stream_error(
+                self._playback_error or "The playback engine is unavailable."
+            )
+            return
+
         self.placeholder_label.hide()
         self.media_player.setSource(QUrl(url))
         self.media_player.play()
@@ -735,13 +814,27 @@ class PlayerView(QWidget):
         QMessageBox.warning(self, "Playback Notice", err_msg)
 
     def _toggle_play(self):
+        if self.media_player is None:
+            return
         if self.media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.media_player.pause()
         else:
             self.media_player.play()
 
     def _seek_relative(self, delta_ms: int):
-        new_pos = max(0, min(self.media_player.duration(), self.media_player.position() + delta_ms))
+        if self.media_player is None:
+            return
+        seek_relative = getattr(self.media_player, "seekRelative", None)
+        if callable(seek_relative):
+            seek_relative(delta_ms)
+            return
+        new_pos = max(
+            0,
+            min(
+                self.media_player.duration(),
+                self.media_player.position() + delta_ms,
+            ),
+        )
         self.media_player.setPosition(new_pos)
 
     def _on_seek_pressed(self):
@@ -749,6 +842,8 @@ class PlayerView(QWidget):
 
     def _on_seek_released(self):
         self.is_slider_pressed = False
+        if self.media_player is None:
+            return
         target_pos = self.seek_slider_docked.value()
         if self.is_bar_visible:
             target_pos = self.floating_bar.seek_slider.value()
@@ -777,6 +872,8 @@ class PlayerView(QWidget):
         self.floating_bar.btn_play.setText(sym)
 
     def _toggle_mute(self):
+        if self.audio_output is None:
+            return
         is_muted = not self.audio_output.isMuted()
         self.audio_output.setMuted(is_muted)
         sym = "🔇" if is_muted else "🔊"
@@ -784,6 +881,8 @@ class PlayerView(QWidget):
         self.floating_bar.btn_mute.setText(sym)
 
     def _on_volume_changed(self, val: int):
+        if self.audio_output is None:
+            return
         self.audio_output.setVolume(val / 100.0)
         self.vol_slider_docked.blockSignals(True)
         self.floating_bar.vol_slider.blockSignals(True)
@@ -800,5 +899,26 @@ class PlayerView(QWidget):
         w = self.window()
         if w.isFullScreen():
             self._toggle_fullscreen()
-        self.media_player.stop()
+        if self.media_player is not None:
+            self.media_player.stop()
         self.back_requested.emit()
+
+    def _shutdown_playback(self):
+        if getattr(self, "_playback_shutdown", False):
+            return
+
+        self._playback_shutdown = True
+        player = self.media_player
+        self.media_player = None
+        self.audio_output = None
+
+        if player is not None:
+            try:
+                player.close()
+            except Exception:
+                import logging
+                logging.exception("Error while shutting down playback")
+
+    def closeEvent(self, event):
+        self._shutdown_playback()
+        super().closeEvent(event)

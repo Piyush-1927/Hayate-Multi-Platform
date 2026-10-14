@@ -1,9 +1,11 @@
 from pathlib import Path
 import re
+import logging
 from urllib.parse import urljoin, quote, unquote
 from PyQt6 import QtCore, QtWidgets, QtGui
-from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PyQt6.QtMultimediaWidgets import QVideoWidget
+from PyQt6.QtMultimedia import QMediaPlayer
+from hayate.core.mpv_adapter import MpvPlayerAdapter
+from hayate.core.playback_platform import detect_playback_platform
 import httpx
 
 from hayate.core.lan_server import get_local_ip, lan_server
@@ -20,13 +22,14 @@ def format_time(ms: int) -> str:
     return f"{m:02d}:{s:02d}"
 
 
-class VideoOverlayWidget(QVideoWidget):
+class VideoOverlayWidget(QtWidgets.QWidget):
     doubleClickedCenter = QtCore.pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMouseTracking(True)
-        self.setAspectRatioMode(QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_NativeWindow, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
 
     def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent):
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
@@ -149,9 +152,11 @@ class LANPlayerWindow(QtWidgets.QDialog):
         self.setMinimumSize(960, 540)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
 
-        self.audio_output = QAudioOutput(self)
-        self.player = QMediaPlayer(self)
-        self.player.setAudioOutput(self.audio_output)
+        # The LAN player owns its own libmpv instance.
+        # QMediaPlayer is retained only for its compatible PlaybackState enum.
+        self.player = None
+        self.audio_output = None
+        self._player_cleanup_started = False
         self.is_slider_pressed = False
 
         self.floating_bar = FloatingControlBar(self)
@@ -167,8 +172,6 @@ class LANPlayerWindow(QtWidgets.QDialog):
             }
         """)
         self._build_ui()
-        self._setup_shortcuts()
-        self._connect_signals()
 
         self.poll_timer = QtCore.QTimer(self)
         self.poll_timer.setInterval(40)
@@ -181,6 +184,30 @@ class LANPlayerWindow(QtWidgets.QDialog):
         self.cursor_idle_timer = QtCore.QTimer(self)
         self.cursor_idle_timer.setInterval(2000)
         self.cursor_idle_timer.timeout.connect(self._hide_cursor_if_idle)
+
+        # Create the native video surface before asking libmpv to embed into it.
+        try:
+            platform = detect_playback_platform()
+            if not platform.supported:
+                raise RuntimeError(platform.reason)
+
+            native_id = int(self.video_widget.winId())
+            if not native_id:
+                raise RuntimeError("Qt did not provide a native video window ID.")
+
+            self.player = MpvPlayerAdapter(platform, native_id, self)
+            self.audio_output = self.player.audio_output
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "LAN Player Unavailable",
+                f"Could not initialize libmpv playback.\n\n{exc}",
+            )
+            QtCore.QTimer.singleShot(0, self.close)
+            return
+
+        self._setup_shortcuts()
+        self._connect_signals()
 
     def _build_ui(self):
         self.root_layout = QtWidgets.QVBoxLayout(self)
@@ -339,7 +366,6 @@ class LANPlayerWindow(QtWidgets.QDialog):
 
         self.video_widget = VideoOverlayWidget(self.card_viewport)
         self.video_widget.doubleClickedCenter.connect(self._toggle_play)
-        self.player.setVideoOutput(self.video_widget)
         self.view_layout.addWidget(self.video_widget)
 
         self.placeholder_label = QtWidgets.QLabel("Double-click a video on the left to start playback.", self.card_viewport)
@@ -394,13 +420,27 @@ class LANPlayerWindow(QtWidgets.QDialog):
         d_layout.setContentsMargins(16, 8, 16, 8)
         d_layout.setSpacing(12)
 
+        self.btn_backward_docked = QtWidgets.QPushButton("⏪")
+        self.btn_backward_docked.setToolTip("Seek -10s")
+        self.btn_backward_docked.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.btn_backward_docked.setFixedSize(34, 34)
+        d_layout.addWidget(self.btn_backward_docked)
+
         self.btn_play_docked = QtWidgets.QPushButton("▶")
         self.btn_play_docked.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.btn_play_docked.setFixedSize(36, 36)
         self.btn_play_docked.clicked.connect(self._toggle_play)
         d_layout.addWidget(self.btn_play_docked)
 
+        self.btn_forward_docked = QtWidgets.QPushButton("⏩")
+        self.btn_forward_docked.setToolTip("Seek +10s")
+        self.btn_forward_docked.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.btn_forward_docked.setFixedSize(34, 34)
+        d_layout.addWidget(self.btn_forward_docked)
+
         self.lbl_time_docked = QtWidgets.QLabel("00:00 / 00:00")
+        self.lbl_time_docked.setMinimumWidth(140)
+        self.lbl_time_docked.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.lbl_time_docked.setStyleSheet("color: #94a3b8; font-size: 12px; font-weight: 600; border: none; background: transparent;")
         d_layout.addWidget(self.lbl_time_docked)
 
@@ -448,6 +488,7 @@ class LANPlayerWindow(QtWidgets.QDialog):
         self.player.playbackStateChanged.connect(self._on_state_changed)
         self.player.positionChanged.connect(self._on_position_changed)
         self.player.durationChanged.connect(self._on_duration_changed)
+        self.player.errorOccurred.connect(self._on_player_error)
 
         self.floating_bar.btn_backward.clicked.connect(self._seek_backward_10)
         self.floating_bar.btn_forward.clicked.connect(self._seek_forward_10)
@@ -463,6 +504,13 @@ class LANPlayerWindow(QtWidgets.QDialog):
         self.floating_bar.seek_slider.sliderPressed.connect(self._on_seek_pressed)
         self.floating_bar.seek_slider.sliderReleased.connect(self._on_seek_released)
         self.floating_bar.vol_slider.valueChanged.connect(self._on_volume_changed)
+
+    def _on_player_error(self, message):
+        QtWidgets.QMessageBox.warning(
+            self,
+            "LAN Playback Error",
+            str(message),
+        )
 
     def _hide_cursor_if_idle(self):
         if self.isFullScreen() and not self.is_bar_visible:
@@ -632,19 +680,28 @@ class LANPlayerWindow(QtWidgets.QDialog):
         self.floating_bar.seek_slider.setStyleSheet(style)
 
     def _on_position_changed(self, position):
+        player = getattr(self, "player", None)
+        if self._player_cleanup_started or player is None:
+            return
+
         if not self.is_slider_pressed:
             self.seek_slider_docked.setValue(position)
             self.floating_bar.seek_slider.setValue(position)
-        dur = self.player.duration()
+
+        dur = player.duration()
         formatted = f"{format_time(position)} / {format_time(dur)}"
         self.lbl_time_docked.setText(formatted)
         self.floating_bar.lbl_time.setText(formatted)
         self._update_slider_groove(position, dur)
 
     def _on_duration_changed(self, duration):
+        player = getattr(self, "player", None)
+        if self._player_cleanup_started or player is None:
+            return
+
         self.seek_slider_docked.setRange(0, duration)
         self.floating_bar.seek_slider.setRange(0, duration)
-        pos = self.player.position()
+        pos = player.position()
         formatted = f"{format_time(pos)} / {format_time(duration)}"
         self.lbl_time_docked.setText(formatted)
         self.floating_bar.lbl_time.setText(formatted)
@@ -728,15 +785,50 @@ class LANPlayerWindow(QtWidgets.QDialog):
         self.setFocus()
 
     def _cleanup_player(self):
+        # This is the existing shared teardown path for reject() and closeEvent().
+        if self._player_cleanup_started:
+            return
+        self._player_cleanup_started = True
+
         self.poll_timer.stop()
         self.hide_timer.stop()
         self.cursor_idle_timer.stop()
         self.unsetCursor()
         self.floating_bar.close()
-        if hasattr(self, "player") and self.player is not None:
-            self.player.stop()
-            self.player.setSource(QtCore.QUrl())
-            self.player.setVideoOutput(None)
+
+        player = getattr(self, "player", None)
+        if player is None:
+            return
+
+        # Detach callbacks first: stop() and terminate() may produce late events.
+        for signal, slot in (
+            (player.playbackStateChanged, self._on_state_changed),
+            (player.positionChanged, self._on_position_changed),
+            (player.durationChanged, self._on_duration_changed),
+            (player.errorOccurred, self._on_player_error),
+        ):
+            try:
+                signal.disconnect(slot)
+            except (TypeError, RuntimeError):
+                # The signal may not have been connected or may already be gone.
+                pass
+
+        # Queued callbacks will now see no active player and return safely.
+        self.player = None
+        try:
+            try:
+                player.stop()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Error stopping the LAN playback adapter during teardown"
+                )
+        finally:
+            try:
+                player.close()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Error closing the LAN playback adapter during teardown"
+                )
 
     def closeEvent(self, event):
         self._cleanup_player()

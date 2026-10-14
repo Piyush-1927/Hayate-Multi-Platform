@@ -41,7 +41,6 @@ Thumbs.db
 # makepkg & Arch artifacts
 *.pkg.tar.*
 pkg/
-src/
 /Hayate/
 
 # Python packaging & virtualenvs

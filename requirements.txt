@@ -1,3 +1,4 @@
 PyQt6>=6.5.0
 requests>=2.28.0
 yt-dlp>=2023.0.0
+python-mpv>=1.0.7
