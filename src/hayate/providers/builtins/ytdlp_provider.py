@@ -1,7 +1,11 @@
+import os
 import subprocess
 import json
 import shutil
 import re
+import sys
+from pathlib import Path
+
 from hayate.providers.base import StreamProvider, Stream
 
 
@@ -39,7 +43,25 @@ class YtDlpProvider(StreamProvider):
     supports_catalog = False
 
     def _find_ytdlp(self):
-        return shutil.which("yt-dlp")
+        # Prefer the normal PATH lookup so existing system installs keep working.
+        ytdlp = shutil.which("yt-dlp")
+        if ytdlp:
+            return ytdlp
+
+        # Also check the active Python environment. On Windows, pip installs
+        # command-line scripts under Scripts; on POSIX systems, under bin.
+        executable_name = "yt-dlp.exe" if os.name == "nt" else "yt-dlp"
+        script_dir = "Scripts" if os.name == "nt" else "bin"
+        candidates = (
+            Path(sys.executable).resolve().parent / executable_name,
+            Path(sys.prefix) / script_dir / executable_name,
+        )
+
+        for candidate in candidates:
+            if candidate.is_file():
+                return str(candidate)
+
+        return None
 
     def _clean_title(self, raw_title: str) -> str:
         t = re.sub(r'\(.*?\)|\[.*?\]', '', raw_title)
