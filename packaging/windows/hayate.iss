@@ -1,5 +1,5 @@
 #define AppName "Hayate"
-#define AppVersion "0.1.0"
+#define AppVersion "0.1.3"
 
 [Setup]
 AppId={{B5C1E8A2-6F4D-4C7A-9E33-2D1A7C0F5B91}
