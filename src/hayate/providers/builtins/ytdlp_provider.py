@@ -52,9 +52,16 @@ class YtDlpProvider(StreamProvider):
         # command-line scripts under Scripts; on POSIX systems, under bin.
         executable_name = "yt-dlp.exe" if os.name == "nt" else "yt-dlp"
         script_dir = "Scripts" if os.name == "nt" else "bin"
+        from hayate.core.settings import config_dir
+        bundle = Path(getattr(sys, "_MEIPASS", sys.prefix))
         candidates = (
             Path(sys.executable).resolve().parent / executable_name,
             Path(sys.prefix) / script_dir / executable_name,
+            # frozen builds: binary bundled at the bundle root
+            bundle / executable_name,
+            bundle / script_dir / executable_name,
+            # user-installed copy, works on any machine without PATH
+            config_dir() / "bin" / executable_name,
         )
 
         for candidate in candidates:
