@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QWidget,
+    QScrollArea,
 )
 
 from hayate.core.history import history_mgr
@@ -53,9 +54,40 @@ class SettingsView(QWidget):
         self.settings = load_settings()
         self.providers = load_providers()
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(40, 24, 40, 40)
-        layout.setSpacing(24)
+        # Keep the full Settings page accessible on short windows and
+        # at increased display scaling.
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background-color: #171722;
+            }
+            QScrollArea QWidget#qt_scrollarea_viewport {
+                background-color: #171722;
+                border: none;
+            }
+        """)
+
+        content = QWidget()
+        content.setObjectName("settings_content")
+        content.setStyleSheet(
+            "QWidget#settings_content { background-color: #171722; border: none; }"
+        )
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(40, 24, 40, 24)
+        layout.setSpacing(20)
+
+        scroll_area.setWidget(content)
+        outer_layout.addWidget(scroll_area)
 
         # Header
         header = QHBoxLayout()
@@ -462,7 +494,6 @@ class SettingsView(QWidget):
 
         layout.addWidget(card_lan)
 
-        layout.addStretch()
 
         # Filesystem watcher for live dynamic reloading
         plugin_path = config_dir() / "providers"

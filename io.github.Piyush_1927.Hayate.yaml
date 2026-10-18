@@ -1,23 +1,18 @@
 app-id: io.github.Piyush_1927.Hayate
 runtime: org.kde.Platform
-runtime-version: '6.8'
+runtime-version: '6.11'
 sdk: org.kde.Sdk
 base: com.riverbankcomputing.PyQt.BaseApp
-base-version: '6.8'
-command: hayate
+base-version: '6.11'
+command: "hayate"
 
 cleanup-commands:
   - /app/cleanup-BaseApp.sh
 
-add-extensions:
-  org.freedesktop.Platform.ffmpeg-full:
-    directory: lib/ffmpeg
-    version: '24.08'
-    add-ld-path: .
-
 finish-args:
   - --socket=wayland
-  - --socket=fallback-x11
+  - --socket=x11
+  - --share=ipc
   - --socket=pulseaudio
   - --share=network
   - --device=dri
@@ -25,13 +20,116 @@ finish-args:
 modules:
   - python3-deps.json
 
+  - name: libmpv
+    buildsystem: meson
+    config-opts:
+      - -Dalsa=disabled
+      - -Dbuild-date=false
+      - -Dlibmpv=true
+      - -Dlua=enabled
+      - -Dmanpage-build=disabled
+      - -Dx11=enabled
+      - -Degl=enabled
+      - -Degl-x11=enabled
+    cleanup:
+      - /share/applications
+      - /share/bash-completion
+      - /share/doc
+      - /share/fish
+      - /share/icons
+      - /share/zsh
+    sources:
+      - type: archive
+        url: https://github.com/mpv-player/mpv/archive/refs/tags/v0.41.0.tar.gz
+        sha256: ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209
+
+    modules:
+      - name: luajit
+        no-autogen: true
+        make-args:
+          - BUILDMODE=dynamic
+          - PREFIX=${FLATPAK_DEST}
+        make-install-args:
+          - PREFIX=${FLATPAK_DEST}
+        cleanup:
+          - /bin
+        sources:
+          - type: git
+            url: https://github.com/openresty/luajit2.git
+            tag: v2.1-20251030
+            commit: 71fae383f6c4637d64b03a6d0ec76ae8c19d6821
+
+      - name: libplacebo
+        buildsystem: meson
+        config-opts:
+          - -Ddemos=false
+        cleanup:
+          - /include
+          - /lib/pkgconfig
+        sources:
+          - type: git
+            url: https://github.com/haasn/libplacebo.git
+            tag: v7.351.0
+            commit: 3188549fba13bbdf3a5a98de2a38c2e71f04e21e
+          - type: patch
+            path: vulkan-python-xml.patch
+
+      - name: libXpresent
+        buildsystem: autotools
+        sources:
+          - type: archive
+            url: https://xorg.freedesktop.org/releases/individual/lib/libXpresent-1.0.2.tar.xz
+            sha256: 4e5b21b4812206a4b223013606ae31170502c1043038777a1ef8f70c09d37602
+
+      - name: libass
+        config-opts:
+          - --disable-static
+          - --enable-asm
+          - --enable-harfbuzz
+          - --enable-fontconfig
+        sources:
+          - type: archive
+            url: https://github.com/libass/libass/releases/download/0.17.4/libass-0.17.4.tar.gz
+            sha256: a886b3b80867f437bc55cff3280a652bfa0d37b43d2aff39ddf3c4f288b8c5a8
+
+      - name: uchardet
+        buildsystem: cmake-ninja
+        config-opts:
+          - -DCMAKE_BUILD_TYPE=Release
+          - -DBUILD_STATIC=0
+          - -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        cleanup:
+          - /bin
+        sources:
+          - type: archive
+            url: https://www.freedesktop.org/software/uchardet/releases/uchardet-0.0.8.tar.xz
+            sha256: e97a60cfc00a1c147a674b097bb1422abd9fa78a2d9ce3f3fdcc2e78a34ac5f0
+
+  - name: python-mpv
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-deps --prefix=/app python_mpv-1.0.8-py3-none-any.whl
+    sources:
+      - type: file
+        url: https://files.pythonhosted.org/packages/22/f3/4c632eaacebfc62ab9414586137aecf6c0ea2a1e99708cf5a4c0dec13ae0/python_mpv-1.0.8-py3-none-any.whl
+        sha256: b5296403e990fb7348df4ca2211937a030f524bf638657bda7e45a00bc2df0cd
+
+  - name: yt-dlp
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 yt-dlp /app/bin/yt-dlp
+    sources:
+      - type: file
+        url: https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp
+        sha256: 1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6
+
   - name: hayate
     buildsystem: simple
     sources:
       - type: dir
         path: .
+        skip: [.git, .flatpak-builder, .build-venv, .venv, venv, build, dist, build-dir, build-mpv-test, pkg, Hayate-Multi-Platform, packaging]
     build-commands:
-      - mkdir -p /app/lib/ffmpeg
       - pip3 install --no-build-isolation --no-deps --prefix=/app .
       - install -Dm644 app_icon.png /app/share/icons/hicolor/256x256/apps/io.github.Piyush_1927.Hayate.png
       - |

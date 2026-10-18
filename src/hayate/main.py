@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication
@@ -5,6 +6,10 @@ from PyQt6.QtGui import QIcon
 from hayate.ui.main_window import MainWindow
 
 def main():
+  # Linux: libmpv embeds through an X11 window id, so default to Qt's xcb platform
+  # (XWayland on Wayland). A user-set QT_QPA_PLATFORM or a missing X server wins.
+  if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
   app = QApplication(sys.argv)
 
   icon_file = Path(__file__).resolve().parents[2] / 'app_icon.png'
