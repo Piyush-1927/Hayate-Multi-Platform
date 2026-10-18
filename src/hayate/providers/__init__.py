@@ -54,6 +54,18 @@ def load_providers() -> dict:
             except Exception as e:
                 print(f"[providers] failed loading built-in {path.name}: {e}", file=sys.stderr)
 
+    # 1b. Frozen (PyInstaller) builds ship no .py files: import built-ins by name instead
+    if getattr(sys, "frozen", False) and not found:
+        try:
+            from hayate.providers.builtins import ytdlp_provider as _yt
+            for _, cls in inspect.getmembers(_yt, inspect.isclass):
+                if _is_candidate(cls, _yt):
+                    inst = cls()
+                    if not _validate(inst):
+                        found[inst.name] = inst
+        except Exception as e:
+            print(f"[providers] failed loading frozen built-in ytdlp: {e}", file=sys.stderr)
+
     # 2. Load User Plugins from ~/.config/hayate/providers/ (User plugins take precedence)
     user_plugin_dir = config_dir() / "providers"
     user_plugin_dir.mkdir(parents=True, exist_ok=True)
