@@ -23,6 +23,7 @@ from hayate.ui.lan_hub import LocalHubWindow
 from hayate.ui.lan_player import LANPlayerWindow
 from hayate.core.image_cache import image_mgr
 from hayate.core.settings import config_dir, load_settings, save_settings, cache_dir
+from PyQt6.QtWidgets import QSlider
 from hayate.providers import load_providers, provider_label
 
 
@@ -205,6 +206,93 @@ class SettingsView(QWidget):
         self.adult_checkbox.clicked.connect(self._on_adult_toggled)
         c_layout.addWidget(self.adult_checkbox)
         layout.addWidget(card_content)
+
+        # Banner transition card
+        card_tr = self._create_card("Banner transition")
+        tr_layout = card_tr.layout() or QVBoxLayout(card_tr)
+        tr_row = QHBoxLayout()
+        tr_row.addWidget(QLabel("Style:"))
+        self.trans_combo = QComboBox()
+        self.trans_combo.setStyleSheet(self.prov_combo.styleSheet())
+        for label, key in (("Slide (original)", "slide"), ("Wipe (directional)", "wipe"),
+                           ("Circle grow", "grow"), ("Circle shrink (outer)", "outer"),
+                           ("Circle from center", "center"), ("Fade", "fade")):
+            self.trans_combo.addItem(label, key)
+        i = self.trans_combo.findData(load_settings().get("banner_transition", "slide"))
+        self.trans_combo.setCurrentIndex(max(i, 0))
+        self.trans_combo.currentIndexChanged.connect(self._on_transition_changed)
+        tr_row.addWidget(self.trans_combo)
+        tr_row.addStretch()
+        tr_layout.addLayout(tr_row)
+
+        dur_row = QHBoxLayout()
+        dur_row.addWidget(QLabel("Duration:"))
+        self.dur_slider = QSlider(Qt.Orientation.Horizontal)
+        self.dur_slider.setRange(100, 1500)
+        self.dur_slider.setPageStep(100)
+        self.dur_slider.setValue(int(load_settings().get("banner_transition_ms", 550)))
+        self.dur_lbl = QLabel(f"{self.dur_slider.value()} ms")
+        self.dur_lbl.setMinimumWidth(60)
+        self.dur_slider.valueChanged.connect(self._on_duration_changed)
+        dur_row.addWidget(self.dur_slider, 1)
+        dur_row.addWidget(self.dur_lbl)
+        tr_layout.addLayout(dur_row)
+
+        pg_row = QHBoxLayout()
+        pg_row.addWidget(QLabel("Page transition:"))
+        self.page_combo = QComboBox()
+        self.page_combo.setStyleSheet(self.prov_combo.styleSheet())
+        for label, key in (("Fade", "fade"), ("Slide", "slide"), ("Zoom", "zoom"), ("None", "none")):
+            self.page_combo.addItem(label, key)
+        self.page_combo.setCurrentIndex(max(self.page_combo.findData(load_settings().get("page_transition", "fade")), 0))
+        self.page_combo.currentIndexChanged.connect(self._on_page_style_changed)
+        pg_row.addWidget(self.page_combo)
+        pg_row.addStretch()
+        tr_layout.addLayout(pg_row)
+
+        pd_row = QHBoxLayout()
+        pd_row.addWidget(QLabel("Page duration:"))
+        self.page_slider = QSlider(Qt.Orientation.Horizontal)
+        self.page_slider.setRange(100, 800)
+        self.page_slider.setPageStep(50)
+        self.page_slider.setValue(int(load_settings().get("page_transition_ms", 260)))
+        self.page_lbl = QLabel(f"{self.page_slider.value()} ms")
+        self.page_slider.valueChanged.connect(self._on_page_dur_changed)
+        pd_row.addWidget(self.page_slider, 1)
+        pd_row.addWidget(self.page_lbl)
+        tr_layout.addLayout(pd_row)
+
+        bl_row = QHBoxLayout()
+        bl_row.addWidget(QLabel("Transition blur:"))
+        self.blur_slider = QSlider(Qt.Orientation.Horizontal)
+        self.blur_slider.setRange(0, 100)
+        self.blur_slider.setValue(int(load_settings().get("transition_blur", 60)))
+        self.blur_lbl = QLabel(f"{self.blur_slider.value()}%")
+        self.blur_slider.valueChanged.connect(self._on_blur_changed)
+        bl_row.addWidget(self.blur_slider, 1)
+        bl_row.addWidget(self.blur_lbl)
+        tr_layout.addLayout(bl_row)
+
+        # match the other cards: padding, label and slider styling
+        tr_layout.setContentsMargins(25, 20, 25, 20)
+        tr_layout.setSpacing(12)
+        _desc = QLabel("Animations for the home banner and for switching between pages.")
+        _desc.setStyleSheet("color: #94a3b8; font-size: 12px; border: none; background: transparent;")
+        tr_layout.insertWidget(0, _desc)
+        for _l in (card_tr.findChildren(QLabel)):
+            if _l is _desc:
+                continue
+            _val = _l in (self.dur_lbl, self.page_lbl, self.blur_lbl)
+            _l.setMinimumWidth(64 if _val else 0)
+            _l.setStyleSheet("color: %s; font-weight: 700; font-size: 13px; border: none; background: transparent;"
+                             % ("#38bdf8" if _val else "#ffffff"))
+        for _s in (self.dur_slider, self.page_slider, self.blur_slider):
+            _s.setStyleSheet("""
+                QSlider::groove:horizontal { height: 4px; background: #2f2f44; border-radius: 2px; }
+                QSlider::sub-page:horizontal { background: #38bdf8; border-radius: 2px; }
+                QSlider::handle:horizontal { background: #38bdf8; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }
+            """)
+        layout.addWidget(card_tr)
 
         # Card 3: Watch History & Backup
         card_hist = self._create_card("Watch History Management")
@@ -457,6 +545,36 @@ class SettingsView(QWidget):
 
         self.prov_combo.setCurrentIndex(active_idx)
         self.prov_combo.blockSignals(False)
+
+    def _on_transition_changed(self, idx: int):
+        d = load_settings()
+        d["banner_transition"] = self.trans_combo.itemData(idx)
+        save_settings(d)
+
+    def _on_duration_changed(self, val: int):
+        val = round(val / 50) * 50
+        self.dur_lbl.setText(f"{val} ms")
+        d = load_settings()
+        d["banner_transition_ms"] = val
+        save_settings(d)
+
+    def _on_page_style_changed(self, idx: int):
+        d = load_settings()
+        d["page_transition"] = self.page_combo.itemData(idx)
+        save_settings(d)
+
+    def _on_page_dur_changed(self, val: int):
+        val = round(val / 20) * 20
+        self.page_lbl.setText(f"{val} ms")
+        d = load_settings()
+        d["page_transition_ms"] = val
+        save_settings(d)
+
+    def _on_blur_changed(self, val: int):
+        self.blur_lbl.setText(f"{val}%")
+        d = load_settings()
+        d["transition_blur"] = int(val)
+        save_settings(d)
 
     def _on_provider_changed(self, idx: int):
         prov_key = self.prov_combo.itemData(idx)

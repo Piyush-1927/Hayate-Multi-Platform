@@ -13,6 +13,93 @@ from hayate.core.settings import load_settings
 
 DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
+from PyQt6.QtCore import (QVariantAnimation, QPropertyAnimation, QEasingCurve,
+                          QEvent, QRect, QRectF, QPoint, QTimer)
+from PyQt6.QtGui import QPainter, QPen, QColor
+from PyQt6.QtWidgets import QWidget, QGraphicsOpacityEffect
+
+
+class _HoverAura(QWidget):
+    """Floating outline that glides between hovered rows."""
+
+    def __init__(self, vp):
+        super().__init__(vp)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._row = None
+        self._fx = QGraphicsOpacityEffect(self)
+        self._fx.setOpacity(0.0)
+        self.setGraphicsEffect(self._fx)
+        self._geo = QPropertyAnimation(self, b"geometry")
+        self._geo.setDuration(200)
+        self._geo.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._fade = QPropertyAnimation(self._fx, b"opacity")
+        self._fade.setDuration(160)
+        self._hide_t = QTimer(self)
+        self._hide_t.setSingleShot(True)
+        self._hide_t.setInterval(70)
+        self._hide_t.timeout.connect(lambda: self._fade_to(0.0))
+        self.hide()
+
+    def _rect(self):
+        try:
+            return QRect(self._row.mapTo(self.parentWidget(), QPoint(0, 0)), self._row.size())
+        except (RuntimeError, AttributeError):
+            return None
+
+    def _fade_to(self, v):
+        self._fade.stop()
+        self._fade.setStartValue(self._fx.opacity())
+        self._fade.setEndValue(v)
+        self._fade.start()
+
+    def hover(self, row):
+        self._hide_t.stop()
+        self._row = row
+        r = self._rect()
+        if r is None:
+            return
+        self._geo.stop()
+        if self.isVisible() and self._fx.opacity() > 0.02:
+            self._geo.setStartValue(self.geometry())
+            self._geo.setEndValue(r)
+            self._geo.start()
+        else:
+            self.setGeometry(r)
+        self.show()
+        self.raise_()
+        self._fade_to(1.0)
+
+    def unhover(self, row):
+        if row is self._row:
+            self._hide_t.start()
+
+    def sync(self, *_):
+        r = self._rect()
+        if r is not None and self._fx.opacity() > 0:
+            self._geo.stop()
+            self.setGeometry(r)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor("#38bdf8"), 1.5))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.75, 0.75, -0.75, -0.75), 8, 8)
+
+
+def _aura_for(row):
+    p = row.parent()
+    while p is not None and not isinstance(p, QScrollArea):
+        p = p.parent()
+    if p is None:
+        return None
+    aura = getattr(p, "_aura", None)
+    if aura is None:
+        aura = _HoverAura(p.viewport())
+        p._aura = aura
+        p.verticalScrollBar().valueChanged.connect(aura.sync)
+    return aura
+
+
 class ScheduleWorker(QThread):
     data_ready = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
@@ -106,6 +193,15 @@ class ScheduleView(QWidget):
         s_layout.addWidget(self.btn_in_app)
 
         header.addWidget(switcher_container)
+        self._switcher = switcher_container
+        self._pill = QFrame(switcher_container)
+        self._pill.setObjectName("pill")
+        self._pill.setStyleSheet("QFrame#pill { background-color: #38bdf8; border: none; border-radius: 6px; }")
+        self._pill.lower()
+        self._pill_anims = []
+        self._pl = 0.0
+        self._pr = 0.0
+        switcher_container.installEventFilter(self)
         layout.addLayout(header)
 
         self.tabs = QTabWidget()
@@ -159,7 +255,7 @@ class ScheduleView(QWidget):
     def _update_switcher_styles(self):
         active_style = """
             QPushButton {
-                background-color: #38bdf8;
+                background-color: transparent;
                 color: #090a0f;
                 font-weight: 800;
                 font-size: 11px;
@@ -186,6 +282,50 @@ class ScheduleView(QWidget):
         else:
             self.btn_global.setStyleSheet(inactive_style)
             self.btn_in_app.setStyleSheet(active_style)
+        self._glide_pill(True)
+
+    def eventFilter(self, obj, ev):
+        if obj is getattr(self, "_switcher", None) and ev.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+            QTimer.singleShot(0, self._pill_resync)
+        return super().eventFilter(obj, ev)
+
+    def _pill_resync(self):
+        running = any(a.state() == QVariantAnimation.State.Running for a in self._pill_anims)
+        self._glide_pill(running)
+
+    def _glide_pill(self, animate: bool):
+        if not hasattr(self, "_pill"):
+            return
+        btn = self.btn_global if self.mode == "global" else self.btn_in_app
+        self._switcher.layout().activate()
+        g = btn.geometry()
+        tl, tr, top, h = float(g.left()), float(g.right() + 1), g.top(), g.height()
+        for a in self._pill_anims:
+            a.stop()
+        self._pill_anims = []
+
+        def apply():
+            self._pill.setGeometry(round(self._pl), top, max(1, round(self._pr - self._pl)), h)
+
+        if not animate or not self._switcher.isVisible() or self._pr <= self._pl:
+            self._pl, self._pr = tl, tr
+            apply()
+            return
+
+        going_right = tl >= self._pl
+
+        def edge(attr, end, ms):
+            a = QVariantAnimation()
+            a.setStartValue(getattr(self, attr))
+            a.setEndValue(end)
+            a.setDuration(ms)
+            a.setEasingCurve(QEasingCurve.Type.OutCubic)
+            a.valueChanged.connect(lambda v, at=attr: (setattr(self, at, float(v)), apply()))
+            a.start()
+            self._pill_anims.append(a)
+
+        edge("_pr", tr, 220 if going_right else 380)   # leading edge fast
+        edge("_pl", tl, 380 if going_right else 220)   # trailing edge lags
 
     def update_tab_labels(self):
         today_idx = datetime.datetime.now().weekday()
@@ -440,7 +580,6 @@ class _ScheduleRow(QFrame):
                 border-radius: 8px;
                 border: 1.5px solid #2f2f44;
             }
-            QFrame:hover { border-color: #38bdf8; }
         """)
         rl = QHBoxLayout(self)
         rl.setContentsMargins(18, 0, 14, 0)
@@ -489,6 +628,18 @@ class _ScheduleRow(QFrame):
         self.status_lbl.setVisible(not aired)
         if not aired:
             self.status_lbl.setText(f"Airs {_eta(left)}")
+
+    def enterEvent(self, event):
+        a = _aura_for(self)
+        if a:
+            a.hover(self)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        a = _aura_for(self)
+        if a:
+            a.unhover(self)
+        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self.anime_id is not None:

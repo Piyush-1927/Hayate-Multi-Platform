@@ -468,6 +468,201 @@ class HoverPreviewPopup(QFrame):
         painter.drawRoundedRect(rect, 14, 14)
 
 
+from PyQt6.QtCore import QVariantAnimation as _QVA, QPointF as _QPF
+from hayate.core.settings import load_settings as _load_cfg
+
+
+from PyQt6.QtWidgets import (QGraphicsScene as _GS, QGraphicsPixmapItem as _GPI,
+                             QGraphicsBlurEffect as _GBE)
+from PyQt6.QtGui import QImage as _QI, QPixmap as _QPM, QPainter as _QPT, QPalette as _PAL
+from PyQt6.QtCore import QVariantAnimation as _QVA2, QEasingCurve as _QEC
+
+_APP_BG = "#14141e"   # app background; adjust if transitions flash a different shade
+_BLUR_CACHE: dict = {}
+
+
+def _get_blur(pix):
+    key = pix.cacheKey()
+    hit = _BLUR_CACHE.get(key)
+    if hit is not None:
+        return hit
+    w, h, dpr = pix.width(), pix.height(), pix.devicePixelRatio()
+    sw, sh = max(1, w // 4), max(1, h // 4)
+    small = pix.scaled(sw, sh, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    small.setDevicePixelRatio(1.0)
+    pad = 16
+    pw, ph = sw + 2 * pad, sh + 2 * pad
+    padded = _QPM(pw, ph)
+    padded.fill(Qt.GlobalColor.transparent)
+    pp = _QPT(padded)
+    pp.drawPixmap(0, 0, pw, ph, small)
+    pp.drawPixmap(pad, pad, small)
+    pp.end()
+    scene = _GS()
+    item = _GPI(padded)
+    fx = _GBE()
+    fx.setBlurRadius(7)
+    fx.setBlurHints(_GBE.BlurHint.QualityHint)
+    item.setGraphicsEffect(fx)
+    scene.addItem(item)
+    img = _QI(pw, ph, _QI.Format.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    ip = _QPT(img)
+    scene.render(ip, QRectF(0, 0, pw, ph), QRectF(0, 0, pw, ph))
+    ip.end()
+    out = _QPM.fromImage(img.copy(pad, pad, sw, sh)).scaled(
+        w, h, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    out.setDevicePixelRatio(dpr)
+    if len(_BLUR_CACHE) > 1:
+        _BLUR_CACHE.clear()
+    _BLUR_CACHE[key] = out
+    return out
+
+
+def _draw_blurred(p, target, pix, k, src=None):
+    target = QRectF(target)
+    src = QRectF(src) if src is not None else QRectF(pix.rect())
+    a = min(1.0, max(0.0, k) * 1.5)
+    base = p.opacity()
+    if a < 0.03 or pix is None or pix.isNull():
+        p.drawPixmap(target, pix, src)
+        return
+    if a < 0.98:
+        p.drawPixmap(target, pix, src)
+    p.setOpacity(base * a)
+    p.drawPixmap(target, _get_blur(pix), src)
+    p.setOpacity(base)
+
+
+class _PageOverlay(QWidget):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.snap = None
+        self.style_ = "fade"
+        self.forward = True
+        self.t = 0.0
+        self.k = 0.6
+
+    def setup(self, snap, style, forward, k):
+        bg = _QPM(snap.size())
+        bg.setDevicePixelRatio(snap.devicePixelRatio())
+        bg.fill(QColor(_APP_BG))
+        pp = _QPT(bg)
+        pp.drawPixmap(0, 0, snap)
+        pp.end()
+        self.snap, self.style_, self.forward, self.t, self.k = bg, style, forward, 0.0, k
+        _get_blur(bg)
+
+    def set_t(self, v):
+        self.t = float(v)
+        self.update()
+
+    def paintEvent(self, _):
+        if self.snap is None:
+            return
+        p = _QPT(self)
+        p.setRenderHint(_QPT.RenderHint.SmoothPixmapTransform)
+        p.setOpacity(max(0.0, 1.0 - self.t))
+        r = QRectF(self.rect())
+        if self.style_ == "slide":
+            p.translate((-1 if self.forward else 1) * 48 * self.t, 0)
+        elif self.style_ == "zoom":
+            c = r.center()
+            s = 1.0 + 0.05 * self.t
+            p.translate(c)
+            p.scale(s, s)
+            p.translate(-c)
+        _draw_blurred(p, r, self.snap, self.k * self.t, QRectF(self.snap.rect()))
+
+
+class AnimatedStack(QStackedWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        pal = self.palette()
+        pal.setColor(_PAL.ColorRole.Window, QColor(_APP_BG))
+        self.setPalette(pal)
+        self.setAutoFillBackground(True)
+        self._ov = _PageOverlay(self)
+        self._ov.hide()
+        self._a = _QVA2(self)
+        self._a.setStartValue(0.0)
+        self._a.setEndValue(1.0)
+        self._a.setEasingCurve(_QEC.Type.InOutCubic)
+        self._a.valueChanged.connect(self._ov.set_t)
+        self._a.finished.connect(self._ov.hide)
+        self._a.finished.connect(lambda: (setattr(self._ov, 'snap', None), _BLUR_CACHE.clear()))
+
+    def setCurrentWidget(self, w):
+        self.setCurrentIndex(self.indexOf(w))
+
+    def setCurrentIndex(self, i):
+        cfg = _load_cfg()
+        style = cfg.get("page_transition", "fade")
+        ms = int(cfg.get("page_transition_ms", 260))
+        cur = self.currentIndex()
+        if style == "none" or ms <= 0 or i == cur or cur < 0 or not self.isVisible():
+            self._a.stop()
+            self._ov.hide()
+            super().setCurrentIndex(i)
+            return
+        self._a.stop()
+        snap = self.grab()
+        super().setCurrentIndex(i)
+        self._ov.setGeometry(self.rect())
+        self._ov.setup(snap, style, i > cur, cfg.get("transition_blur", 60) / 100.0)
+        self._ov.raise_()
+        self._ov.show()
+        self._a.setDuration(ms)
+        self._a.start()
+
+
+class _BannerVeil(QWidget):
+    """Previous frame drawn on top; a growing mask reveals the live new frame."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.snap = None
+        self.style_ = "wipe"
+        self.forward = True
+        self.origin = _QPF(0, 0)
+        self.t = 0.0
+        self.hide()
+
+    def paintEvent(self, _):
+        if self.snap is None:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        r = QRectF(self.rect())
+        t, st = self.t, self.style_
+        rounded = QPainterPath()
+        rounded.addRoundedRect(r.adjusted(1, 1, -1, -1), 16, 16)
+        if st == "fade":
+            p.setClipPath(rounded)
+            p.setOpacity(max(0.0, 1.0 - t))
+        else:
+            maxr = (r.width() ** 2 + r.height() ** 2) ** 0.5
+            keep = QPainterPath()
+            if st == "outer":
+                keep.addEllipse(self.origin, maxr * (1 - t), maxr * (1 - t))
+            elif st in ("grow", "center"):
+                c = r.center() if st == "center" else self.origin
+                hole = QPainterPath()
+                hole.addEllipse(c, maxr * t, maxr * t)
+                keep.addRect(r)
+                keep = keep.subtracted(hole)
+            else:  # wipe
+                if self.forward:
+                    keep.addRect(QRectF(0, 0, r.width() * (1 - t), r.height()))
+                else:
+                    keep.addRect(QRectF(r.width() * t, 0, r.width() * (1 - t), r.height()))
+            p.setClipPath(rounded.intersected(keep))
+        _draw_blurred(p, self.rect(), self.snap, getattr(self, 'k', 0.6) * self.t)
+
+
 class HeroSpotlightBanner(QWidget):
     banner_clicked = pyqtSignal()
     watch_requested = pyqtSignal()
@@ -487,6 +682,15 @@ class HeroSpotlightBanner(QWidget):
         self.anim = QPropertyAnimation(self, b"slideOffset")
         self.anim.setDuration(550)
         self.anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._veil = _BannerVeil(self)
+        self._tr_ms = 550
+        self._veil_anim = _QVA(self)
+        self._veil_anim.setStartValue(0.0)
+        self._veil_anim.setEndValue(1.0)
+        self._veil_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._veil_anim.valueChanged.connect(self._veil_tick)
+        self._veil_anim.finished.connect(self._veil.hide)
+        self._veil_anim.finished.connect(lambda: (setattr(self._veil, 'snap', None), _BLUR_CACHE.clear()))
 
         self.installEventFilter(self)
         self.installEventFilter(self)
@@ -572,6 +776,41 @@ class HeroSpotlightBanner(QWidget):
         bottom_bar.addLayout(nav_arrows)
         layout.addLayout(bottom_bar)
 
+    def _veil_tick(self, v):
+        self._veil.t = float(v)
+        self._veil.update()
+
+    def _begin_transition(self) -> str:
+        cfg = _load_cfg()
+        style = cfg.get("banner_transition", "slide")
+        self._tr_ms = int(cfg.get("banner_transition_ms", 550))
+        if style not in ("wipe", "grow", "outer", "center", "fade") \
+                or not self.isVisible() or self.banner_pixmap is None:
+            self._veil_anim.stop()
+            self._veil.hide()
+            return "slide"
+        self._veil_anim.stop()
+        self._veil.snap = self.grab()   # includes a half-finished veil, so interrupts are seamless
+        return style
+
+    def _finish_transition(self, style: str, forward: bool):
+        if style == "slide":
+            self.anim.setDuration(self._tr_ms)
+            self.trigger_slide(forward)
+            return
+        self.anim.stop()
+        self.set_slide_offset(0.0)
+        v = self._veil
+        v.setGeometry(self.rect())
+        v.style_, v.forward, v.t = style, forward, 0.0
+        v.k = _load_cfg().get('transition_blur', 60) / 100.0
+        btn = self.next_btn if forward else self.prev_btn
+        v.origin = _QPF(btn.mapTo(self, btn.rect().center()))
+        v.raise_()
+        v.show()
+        self._veil_anim.setDuration(self._tr_ms)
+        self._veil_anim.start()
+
     def get_slide_offset(self) -> float:
         return self._slide_offset
 
@@ -606,6 +845,7 @@ class HeroSpotlightBanner(QWidget):
         self._swipe_cooldown = False
 
     def set_data(self, anime: AnimeMedia, rank: int, forward: bool = True):
+        _style = self._begin_transition()
         self.current_anime_id = anime.id
         self.tag_lbl.setText(f"#{rank} SPOTLIGHT")
         self.title_lbl.setText(anime.title)
@@ -625,7 +865,7 @@ class HeroSpotlightBanner(QWidget):
                     priority=1000
                 )
 
-        self.trigger_slide(forward)
+        self._finish_transition(_style, forward)
 
     def _on_banner_loaded(self, aid: int, pixmap: QPixmap):
         _SPOTLIGHT_PIX_CACHE[aid] = pixmap
@@ -935,7 +1175,7 @@ class MainWindow(QMainWindow):
             QScrollArea { border: none; background: transparent; }
         """)
 
-        self.stack = QStackedWidget(self)
+        self.stack = AnimatedStack(self)
         self.setCentralWidget(self.stack)
 
         self.home_scroll = QScrollArea()
@@ -968,7 +1208,14 @@ class MainWindow(QMainWindow):
 
         self.logo_lbl = QLabel()
         self.logo_lbl.setFixedSize(32, 32)
-        logo_pix = QPixmap("app_icon.png")
+        from pathlib import Path as _P
+        logo_pix = QPixmap()
+        for _c in (_P(__file__).resolve().parents[3] / "app_icon.png",
+                   _P("app_icon.png"),
+                   _P("/usr/share/icons/hicolor/256x256/apps/hayate.png"),
+                   _P("/app/share/icons/hicolor/256x256/apps/io.github.Piyush_1927.Hayate.png")):
+            if _c.is_file() and logo_pix.load(str(_c)):
+                break
         if not logo_pix.isNull():
             self.logo_lbl.setPixmap(logo_pix.scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         brand_layout.addWidget(self.logo_lbl)
