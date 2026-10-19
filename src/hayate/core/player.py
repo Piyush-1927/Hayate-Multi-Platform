@@ -15,6 +15,9 @@ NO_STREAM_MSG = (
 )
 
 
+_NOWIN = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+
+
 def ytdl_format(quality: str) -> str:
     q = (quality or "best").lower().rstrip("p")
     if q.isdigit():
@@ -120,6 +123,7 @@ class PlayerController:
                     stderr=subprocess.STDOUT,
                     text=True,
                     start_new_session=True,
+                    **_NOWIN,
                 )
             except Exception as e:
                 finish("error", f"Could not launch mpv: {e}")
