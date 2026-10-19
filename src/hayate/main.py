@@ -12,6 +12,9 @@ def main():
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
   app = QApplication(sys.argv)
 
+  from hayate.core.theme import theme
+  app.setStyleSheet(theme.qss())
+  theme.changed.connect(lambda: app.setStyleSheet(theme.qss()))
   icon_file = Path(__file__).resolve().parents[2] / 'app_icon.png'
   if icon_file.exists():
       app.setWindowIcon(QIcon(str(icon_file)))

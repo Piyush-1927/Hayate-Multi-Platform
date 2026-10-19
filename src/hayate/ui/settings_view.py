@@ -26,6 +26,7 @@ from hayate.core.image_cache import image_mgr
 from hayate.core.settings import config_dir, load_settings, save_settings, cache_dir
 from PyQt6.QtWidgets import QSlider
 from hayate.providers import load_providers, provider_label
+from hayate.core.dialogs import dlg_open, dlg_save
 
 
 def _ensure_check_icon() -> str:
@@ -196,6 +197,13 @@ class SettingsView(QWidget):
         """)
         open_folder_btn.clicked.connect(self._open_plugins_folder)
         row_prov.addWidget(open_folder_btn)
+        imp_btn = QPushButton("⬇ Import Provider…")
+        imp_btn.setFixedHeight(36)
+        imp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        from hayate.core import theme as _th
+        imp_btn.setStyleSheet(_th._tracked.get(open_folder_btn) or open_folder_btn.styleSheet())
+        imp_btn.clicked.connect(self._import_provider)
+        row_prov.addWidget(imp_btn)
         row_prov.addStretch()
 
         p_layout.addLayout(row_prov)
@@ -326,6 +334,8 @@ class SettingsView(QWidget):
             """)
         layout.addWidget(card_tr)
 
+        from hayate.core.theme import ThemeSettingsCard
+        layout.addWidget(ThemeSettingsCard())
         # Card 3: Watch History & Backup
         card_hist = self._create_card("Watch History Management")
         h_layout = QVBoxLayout(card_hist)
@@ -504,17 +514,33 @@ class SettingsView(QWidget):
 
         # Populate combo box initially
         self.refresh_providers()
+        self._lock_wheel()
+        from hayate.ui.infobtn import polish_settings
+        polish_settings(self)
+
+    def _lock_wheel(self):
+        from PyQt6.QtWidgets import QSlider, QComboBox, QAbstractSpinBox
+        for w in self.findChildren((QSlider, QComboBox, QAbstractSpinBox)):
+            w.installEventFilter(self)
+            w.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+
+    def eventFilter(self, obj, ev):
+        from PyQt6.QtCore import QEvent
+        from PyQt6.QtWidgets import QScrollArea
+        if ev.type() == QEvent.Type.Wheel:
+            sa = self.findChild(QScrollArea)
+            if sa is not None:
+                dy = ev.pixelDelta().y() or ev.angleDelta().y() // 2
+                if abs(dy) >= abs(ev.pixelDelta().x() or ev.angleDelta().x()):
+                    sb = sa.verticalScrollBar()
+                    sb.setValue(sb.value() - dy)
+            return True
+        return super().eventFilter(obj, ev)
 
     def _create_card(self, title_text: str) -> QFrame:
         card = QFrame()
         card.setObjectName("settings_card")
-        card.setStyleSheet("""
-            QFrame#settings_card {
-                background-color: #1e1e2d;
-                border-radius: 16px;
-                border: 1.5px solid #2f2f44;
-            }
-        """)
+        card.setProperty("card", True)
         return card
 
     def _on_refresh_clicked(self):
@@ -613,6 +639,38 @@ class SettingsView(QWidget):
             self.settings["provider"] = prov_key
             save_settings(self.settings)
             self.settings_changed.emit()
+    def _import_provider(self):
+        import shutil
+        from pathlib import Path
+        from PyQt6.QtWidgets import QMessageBox
+        path, _ = dlg_open(self, "Import provider", "", "Python provider (*.py)")
+        if not path:
+            return
+        src = Path(path)
+        dest_dir = config_dir() / "providers"
+        dest = dest_dir / src.name
+        if src.suffix != ".py":
+            QMessageBox.warning(self, "Import provider", "Providers must be .py files.")
+            return
+        if dest.exists() and src.resolve() == dest.resolve():
+            QMessageBox.information(self, "Import provider", "That provider is already installed.")
+            return
+        box = QMessageBox.question(
+            self, "Import provider",
+            f"Providers are Python code that runs inside Hayate.\nOnly import ones you trust.\n\n"
+            f"Copy {src.name} to your providers folder?\nThe original file is left untouched."
+            + ("\n\nA provider with this name exists and will be replaced." if dest.exists() else ""))
+        if box != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+        except OSError as e:
+            QMessageBox.warning(self, "Import provider", f"Copy failed: {e}")
+            return
+        self.refresh_providers()
+        QMessageBox.information(self, "Import provider", f"Installed {src.name}. Original kept at:\n{src}")
+
 
     def _open_plugins_folder(self):
         p_dir = config_dir() / "providers"
@@ -652,7 +710,7 @@ class SettingsView(QWidget):
             QMessageBox.information(self, "Export Notice", "No watch history recorded yet.")
             return
 
-        file_dest, _ = QFileDialog.getSaveFileName(
+        file_dest, _ = dlg_save(
             self, "Export Watch History", "hayate_history_backup.json", "JSON Files (*.json)"
         )
         if file_dest:
@@ -664,7 +722,7 @@ class SettingsView(QWidget):
                 QMessageBox.warning(self, "Export Error", f"Failed to export history: {e}")
 
     def _import_history(self):
-        file_src, _ = QFileDialog.getOpenFileName(
+        file_src, _ = dlg_open(
             self, "Import Watch History Backup", "", "JSON Files (*.json)"
         )
         if file_src:
