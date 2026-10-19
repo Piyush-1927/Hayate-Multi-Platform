@@ -1135,11 +1135,13 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Hayate")
-        self.setMinimumSize(1000, 700)
         screen = QApplication.primaryScreen()
         if screen:
-            self.setGeometry(screen.availableGeometry())
+            _avail = screen.availableGeometry()
+            self.setMinimumSize(min(1000, _avail.width()), min(700, _avail.height()))
+            self.setGeometry(_avail)
         else:
+            self.setMinimumSize(1000, 700)
             self.resize(1260, 900)
         self.player = PlayerController()
         self.spotlight_items: list[AnimeMedia] = []
