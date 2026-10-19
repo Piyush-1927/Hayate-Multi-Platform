@@ -7,10 +7,56 @@ from PyQt6.QtMultimedia import QMediaPlayer
 from hayate.core.mpv_adapter import MpvPlayerAdapter
 from hayate.core.playback_platform import detect_playback_platform
 import httpx
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from hayate.core.lan_server import get_local_ip, lan_server
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".avi", ".m4v"}
+
+
+class _RemoteScanSignals(QtCore.QObject):
+    found = QtCore.pyqtSignal(int, list)  # token, relative file paths
+    done = QtCore.pyqtSignal(int, int)    # token, failed request count
+
+
+def _crawl_remote(base_url, on_found, cancelled, max_depth=10, workers=8):
+    # Breadth-first crawl of the server's directory listings. One shared client,
+    # all folders of a level fetched in parallel. Returns the failed request count.
+    errors = 0
+    seen = {base_url}
+    level = [(base_url, "")]
+    with httpx.Client(timeout=4.0) as client, ThreadPoolExecutor(max_workers=workers) as pool:
+        def fetch(item):
+            try:
+                resp = client.get(item[0])
+                return resp.text if resp.status_code == 200 else None
+            except Exception:
+                return None
+
+        for _ in range(max_depth + 1):
+            if not level or cancelled():
+                break
+            nxt, names = [], []
+            for (url, prefix), text in zip(level, pool.map(fetch, level)):
+                if text is None:
+                    errors += 1
+                    continue
+                for link in re.findall(r'href="([^"]+)"', text):
+                    if link.startswith(("?", "/", "..")) or "://" in link:
+                        continue
+                    clean = unquote(link)
+                    if clean.endswith("/"):
+                        child = urljoin(url, link)
+                        if child not in seen:
+                            seen.add(child)
+                            nxt.append((child, f"{prefix}{clean}"))
+                    elif any(clean.lower().endswith(ext) for ext in VIDEO_EXTS):
+                        names.append(f"{prefix}{clean}")
+            if names:
+                on_found(names)
+            level = nxt
+    return errors
 
 
 def format_time(ms: int) -> str:
@@ -739,34 +785,56 @@ class LANPlayerWindow(QtWidgets.QDialog):
 
     def _scan_remote_media(self):
         self.file_list.clear()
-        base_url = self.host_input.text().strip().rstrip("/") + "/"
-        if not base_url:
+        host = self.host_input.text().strip().rstrip("/")
+        if not host:
             return
+        base_url = host + "/"
 
-        found_files = []
+        sig = getattr(self, "_scan_signals", None)
+        if sig is None:
+            sig = self._scan_signals = _RemoteScanSignals(self)
+            sig.found.connect(self._on_scan_found)
+            sig.done.connect(self._on_scan_done)
+            self._scan_token = 0
+        self._scan_token += 1
+        token = self._scan_token
 
-        def crawl(url, rel_prefix=""):
+        self._scan_status_item = QtWidgets.QListWidgetItem("Scanning…")
+        self._scan_status_item.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)
+        self.file_list.addItem(self._scan_status_item)
+
+        def work():
             try:
-                resp = httpx.get(url, timeout=4.0)
-                if resp.status_code != 200:
-                    return
-                links = re.findall(r'href="([^"]+)"', resp.text)
-                for link in links:
-                    if link.startswith("?") or link.startswith("/"):
-                        continue
-                    clean = unquote(link)
-                    if clean.endswith("/"):
-                        crawl(urljoin(url, link), f"{rel_prefix}{clean}")
-                    elif any(clean.lower().endswith(ext) for ext in VIDEO_EXTS):
-                        found_files.append(f"{rel_prefix}{clean}")
-            except Exception:
-                pass
+                errors = _crawl_remote(
+                    base_url,
+                    lambda names: sig.found.emit(token, names),
+                    lambda: self._scan_token != token,
+                )
+                sig.done.emit(token, errors)
+            except RuntimeError:
+                pass  # window closed mid-scan
 
-        crawl(base_url)
+        threading.Thread(target=work, daemon=True).start()
 
-        if found_files:
-            for item in sorted(found_files):
-                self.file_list.addItem(item)
+    def _on_scan_found(self, token, names):
+        if token != self._scan_token:
+            return
+        for name in names:
+            self.file_list.addItem(name)
+
+    def _on_scan_done(self, token, errors):
+        if token != self._scan_token:
+            return
+        item = getattr(self, "_scan_status_item", None)
+        if item is not None:
+            row = self.file_list.row(item)
+            if row >= 0:
+                self.file_list.takeItem(row)
+            self._scan_status_item = None
+        if self.file_list.count():
+            self.file_list.sortItems()
+        elif errors:
+            QtWidgets.QMessageBox.warning(self, "Scan Result", "Could not reach the host. Check the address and that hosting is turned on.")
         else:
             QtWidgets.QMessageBox.information(self, "Scan Result", "No compatible video files found at this host.")
 
