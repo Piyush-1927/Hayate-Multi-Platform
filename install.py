@@ -5,6 +5,9 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
+import zipfile
 
 BOLD = "\033[1m"
 GREEN = "\033[0;32m"
@@ -16,6 +19,10 @@ NC = "\033[0m"
 APP_ID = "io.github.Piyush_1927.Hayate"
 PYPI_PKG = "hayate-player"
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+RELEASE_URL = "https://github.com/Piyush-1927/Hayate-Multi-Platform/releases/latest/download"
+INSTALLER_NAME = "Hayate-Setup.exe"
+PORTABLE_NAME = "Hayate-Windows-portable.zip"
 
 
 def detect_system():
@@ -118,17 +125,104 @@ def install_makepkg():
         sys.exit(e.returncode)
 
 
+
+
+def download_release_asset(name, destination_dir):
+    url = f"{RELEASE_URL}/{name}"
+    destination = Path(destination_dir) / name
+    print(f"{BLUE}[*] Downloading {url}{NC}")
+    try:
+        urllib.request.urlretrieve(url, destination)
+    except (OSError, ValueError) as e:
+        print(f"{RED}[!] Download failed: {e}{NC}")
+        sys.exit(1)
+    return destination
+
+
+def extract_portable_zip(archive, target):
+    """Reject archive paths that resolve outside the destination."""
+    target.mkdir(parents=True, exist_ok=True)
+    root = target.resolve()
+
+    try:
+        with zipfile.ZipFile(archive) as z:
+            for member in z.infolist():
+                name = member.filename.replace("\\", "/")
+
+                if name.startswith("/") or (
+                    len(name) >= 2 and name[1] == ":"
+                ):
+                    raise ValueError(f"Unsafe ZIP path: {member.filename!r}")
+
+                destination = (root / name).resolve()
+                if not destination.is_relative_to(root):
+                    raise ValueError(f"Unsafe ZIP path: {member.filename!r}")
+
+            z.extractall(root)
+    except (OSError, zipfile.BadZipFile, RuntimeError, ValueError) as e:
+        print(f"{RED}[!] Portable extraction failed: {e}{NC}")
+        sys.exit(1)
+
+
+def install_windows_installer():
+    print(f"\n{BOLD}{BLUE}[*] Downloading Windows installer...{NC}")
+    with tempfile.TemporaryDirectory(prefix="hayate-installer-") as tmp:
+        exe = download_release_asset(INSTALLER_NAME, tmp)
+        try:
+            subprocess.run([str(exe)], check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"{RED}[!] Installer exited with code {e.returncode}{NC}")
+            sys.exit(e.returncode)
+        except OSError as e:
+            print(f"{RED}[!] Could not launch installer: {e}{NC}")
+            sys.exit(1)
+
+    print(f"{GREEN}[✓] Installer finished.{NC}")
+
+
+def install_windows_portable():
+    print(f"\n{BOLD}{BLUE}[*] Downloading portable ZIP...{NC}")
+    base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+    target = base / "Hayate"
+
+    with tempfile.TemporaryDirectory(prefix="hayate-portable-") as tmp:
+        archive = download_release_asset(PORTABLE_NAME, tmp)
+        extract_portable_zip(archive, target)
+
+    executables = sorted(target.rglob("Hayate.exe"))
+    print(f"{GREEN}[✓] Portable files extracted to: {target}{NC}")
+    if executables:
+        print(f"Run Hayate using: {executables[0]}")
+    else:
+        print("Hayate.exe was not found; check the ZIP's directory structure.")
+
+
 def main():
     system, distro = detect_system()
     print(f"{BOLD}{BLUE}=== Hayate Installer ==={NC}\n")
 
-    if system in ("darwin", "windows"):
-        os_label = "macOS" if system == "darwin" else "Windows"
-        print(f"Detected Operating System: {BOLD}{YELLOW}{os_label}{NC}")
+    if system == "windows":
+        print(f"Detected Operating System: {BOLD}{YELLOW}Windows{NC}")
+        print("\\nPlease choose an installation method:")
+        print("  1) Windows installer (Recommended - Hayate-Setup.exe)")
+        print("  2) Portable ZIP (extracts to %LOCALAPPDATA%\\\\Hayate)")
+        print("  3) pipx (Python package)")
+        print("  4) Quit")
+
+        choice = input("\\nEnter choice [1-4]: ").strip()
+        if choice == "1":
+            install_windows_installer()
+        elif choice == "2":
+            install_windows_portable()
+        elif choice == "3":
+            install_pipx()
+        else:
+            print("Exiting.")
+
+    elif system == "darwin":
+        print(f"Detected Operating System: {BOLD}{YELLOW}macOS{NC}")
         print(f"Recommended installation method: {BOLD}pipx{NC}")
-        choice = (
-            input("Proceed with pipx installation? [Y/n]: ").strip().lower()
-        )
+        choice = input("Proceed with pipx installation? [Y/n]: ").strip().lower()
         if choice in ("", "y", "yes"):
             install_pipx()
         else:
