@@ -37,6 +37,9 @@ OFFICIAL_CHANNELS = {
 }
 
 
+_NOWIN = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+
+
 class YtDlpProvider(StreamProvider):
     name = "ytdlp"
     label = "Official Licensors (YouTube)"
@@ -117,7 +120,7 @@ class YtDlpProvider(StreamProvider):
         matched_uploader = ""
 
         try:
-            res = subprocess.run(scan_cmd, capture_output=True, text=True, timeout=8)
+            res = subprocess.run(scan_cmd, capture_output=True, text=True, timeout=8, **_NOWIN)
             if res.returncode == 0 and res.stdout.strip():
                 for line in res.stdout.strip().splitlines():
                     try:
@@ -148,7 +151,7 @@ class YtDlpProvider(StreamProvider):
                 "-j",
                 target_url,
             ]
-            ext_res = subprocess.run(extract_cmd, capture_output=True, text=True, timeout=12)
+            ext_res = subprocess.run(extract_cmd, capture_output=True, text=True, timeout=12, **_NOWIN)
             if ext_res.returncode == 0 and ext_res.stdout.strip():
                 meta = json.loads(ext_res.stdout.strip().splitlines()[0])
                 direct_url = meta.get("url")
