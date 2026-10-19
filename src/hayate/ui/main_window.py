@@ -449,11 +449,7 @@ class HoverPreviewPopup(QFrame):
         painter.setClipPath(path)
 
         if self.bg_pixmap and not self.bg_pixmap.isNull():
-            scaled = self.bg_pixmap.scaled(
-                self.size(),
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation
-            )
+            scaled = _fit_pixmap(self, self.bg_pixmap)
             painter.drawPixmap(0, 0, scaled)
             grad = QLinearGradient(0, 0, 0, self.height())
             grad.setColorAt(0.0, QColor(18, 18, 26, 220))
@@ -882,12 +878,8 @@ class HeroSpotlightBanner(QWidget):
         painter.setClipPath(path)
 
         if self.banner_pixmap and not self.banner_pixmap.isNull():
-            scaled = self.banner_pixmap.scaled(
-                self.size(),
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            x_offset = max(0, scaled.width() - self.width())
+            scaled = _fit_pixmap(self, self.banner_pixmap)
+            x_offset = max(0, round(scaled.width() / scaled.devicePixelRatio()) - self.width())
             painter.drawPixmap(-x_offset // 2, 0, scaled)
             grad = QLinearGradient(0, 0, self.width(), 0)
             grad.setColorAt(0.0, QColor(20, 20, 30, 255))
@@ -901,6 +893,22 @@ class HeroSpotlightBanner(QWidget):
         painter.setClipping(False)
         painter.setPen(QPen(QColor(255, 255, 255, 20), 1.0))
         painter.drawRoundedRect(rect, 16, 16)
+
+
+def _fit_pixmap(owner, pix):
+    """Scale pix to owner's size in physical pixels so it stays sharp at any display scale."""
+    dpr = owner.devicePixelRatioF()
+    key = (pix.cacheKey(), owner.width(), owner.height(), dpr)
+    if getattr(owner, "_fit_key", None) != key:
+        scaled = pix.scaled(
+            owner.size() * dpr,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        scaled.setDevicePixelRatio(dpr)
+        owner._fit_key = key
+        owner._fit_pix = scaled
+    return owner._fit_pix
 
 
 class PosterImageWidget(QWidget):
@@ -928,13 +936,10 @@ class PosterImageWidget(QWidget):
         painter.setClipPath(path)
 
         if self.pixmap and not self.pixmap.isNull():
-            scaled = self.pixmap.scaled(
-                self.size(),
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            x = (self.width() - scaled.width()) // 2
-            y = (self.height() - scaled.height()) // 2
+            scaled = _fit_pixmap(self, self.pixmap)
+            _d = scaled.devicePixelRatio()
+            x = (self.width() - round(scaled.width() / _d)) // 2
+            y = (self.height() - round(scaled.height() / _d)) // 2
             painter.drawPixmap(x, y, scaled)
         else:
             painter.fillRect(self.rect(), QColor(28, 28, 42))
