@@ -26,7 +26,7 @@ def ytdl_format(quality: str) -> str:
 
 
 def find_ytdlp():
-    exe = Path(sys.executable).parent / "yt-dlp"
+    exe = Path(sys.executable).parent / ("yt-dlp.exe" if sys.platform == "win32" else "yt-dlp")
     return str(exe) if exe.exists() else shutil.which("yt-dlp")
 
 
