@@ -52,3 +52,23 @@ __pycache__/
 # Flatpak build tree
 build-dir/
 .flatpak-builder/
+
+# Local build environments, backups, and diagnostic output
+/.build-venv/
+/build-backups/
+/build-mpv-test-build.log
+/build-mpv-test-build.status
+/build-mpv-test-download.log
+/build-mpv-test-download.status
+
+# Temporary source snapshots
+/src/hayate/ui/*.before-*.bak
+/src/hayate/ui/*.pre-*
+/PKGBUILD.before-*.bak
+/io.github.Piyush_1927.Hayate*.bak
+
+# Nested local repository copy
+/Hayate-Multi-Platform/
+
+# Local settings layout snapshots
+/src/hayate/ui/*.before-settings-layout-fix-*

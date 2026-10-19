@@ -1,6 +1,6 @@
 # Maintainer: Piyush
 pkgname=hayate-git
-pkgver=0.1.3
+pkgver=0.1.6
 pkgrel=1
 pkgdesc="Fast, native anime catalog and desktop streaming client"
 arch=('any')
