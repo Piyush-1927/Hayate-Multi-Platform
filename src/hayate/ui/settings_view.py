@@ -1,5 +1,7 @@
 import json
 import subprocess
+import os
+import sys
 from pathlib import Path
 
 from PyQt6.QtCore import QFileSystemWatcher, QPoint, Qt, QTimer, pyqtSignal
@@ -676,7 +678,7 @@ class SettingsView(QWidget):
         p_dir = config_dir() / "providers"
         p_dir.mkdir(parents=True, exist_ok=True)
         try:
-            subprocess.Popen(["xdg-open", str(p_dir)])
+            (os.startfile(str(p_dir)) if sys.platform == "win32" else subprocess.Popen(["xdg-open", str(p_dir)]))
         except Exception:
             QMessageBox.information(self, "Plugin Folder", f"Plugin directory is located at:\n{p_dir}")
 
