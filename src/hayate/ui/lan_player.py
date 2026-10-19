@@ -7,6 +7,7 @@ from PyQt6.QtMultimedia import QMediaPlayer
 from hayate.core.mpv_adapter import MpvPlayerAdapter
 from hayate.core.playback_platform import detect_playback_platform
 import httpx
+from html import unescape as _html_unescape
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -43,6 +44,7 @@ def _crawl_remote(base_url, on_found, cancelled, max_depth=10, workers=8):
                     errors += 1
                     continue
                 for link in re.findall(r'href="([^"]+)"', text):
+                    link = _html_unescape(link)
                     if link.startswith(("?", "/", "..")) or "://" in link:
                         continue
                     clean = unquote(link)
@@ -555,7 +557,7 @@ class LANPlayerWindow(QtWidgets.QDialog):
         QtWidgets.QMessageBox.warning(
             self,
             "LAN Playback Error",
-            str(message),
+            f"{message}\n\n{getattr(self, '_last_stream_url', '')}",
         )
 
     def _hide_cursor_if_idle(self):
@@ -842,7 +844,11 @@ class LANPlayerWindow(QtWidgets.QDialog):
         rel_path = item.text()
         base_url = self.host_input.text().strip().rstrip("/")
         quoted_path = "/".join(quote(part) for part in rel_path.split("/"))
+        if "://" not in base_url:
+            base_url = "http://" + base_url
         stream_url = f"{base_url}/{quoted_path}"
+        self._last_stream_url = stream_url
+        print("LAN stream_url:", stream_url, flush=True)
 
         if self.placeholder_label:
             self.placeholder_label.hide()

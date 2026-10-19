@@ -169,7 +169,7 @@ class MpvPlayerAdapter(QObject):
             self.playbackStateChanged.emit(state)
 
     def setSource(self, url):
-        self._source = url.toString() if hasattr(url, "toString") else str(url)
+        self._source = url.toEncoded().data().decode("ascii") if hasattr(url, "toString") else str(url)
         self._position_ms = 0
         self._duration_ms = 0
 
