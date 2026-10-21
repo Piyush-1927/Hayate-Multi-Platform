@@ -1,5 +1,6 @@
 import os
 import subprocess
+from hayate.core import net
 import json
 import shutil
 import re
@@ -120,7 +121,7 @@ class YtDlpProvider(StreamProvider):
         matched_uploader = ""
 
         try:
-            res = subprocess.run(scan_cmd, capture_output=True, text=True, timeout=8, **_NOWIN)
+            res = subprocess.run(scan_cmd[:1] + net.ytdlp_args() + scan_cmd[1:], capture_output=True, text=True, timeout=8, **_NOWIN)
             if res.returncode == 0 and res.stdout.strip():
                 for line in res.stdout.strip().splitlines():
                     try:
@@ -151,7 +152,7 @@ class YtDlpProvider(StreamProvider):
                 "-j",
                 target_url,
             ]
-            ext_res = subprocess.run(extract_cmd, capture_output=True, text=True, timeout=12, **_NOWIN)
+            ext_res = subprocess.run(extract_cmd[:1] + net.ytdlp_args() + extract_cmd[1:], capture_output=True, text=True, timeout=12, **_NOWIN)
             if ext_res.returncode == 0 and ext_res.stdout.strip():
                 meta = json.loads(ext_res.stdout.strip().splitlines()[0])
                 direct_url = meta.get("url")
@@ -196,7 +197,7 @@ class YtDlpProvider(StreamProvider):
         seen, out = set(), []
         for url in self._channel_urls():
             try:
-                r = subprocess.run([exe, "--flat-playlist", "-J", "--no-warnings", url.rstrip("/") + "/playlists"],
+                r = subprocess.run([exe, *net.ytdlp_args(), "--flat-playlist", "-J", "--no-warnings", url.rstrip("/") + "/playlists"],
                                    capture_output=True, text=True, timeout=90, **_NOWIN)
                 entries = json.loads(r.stdout).get("entries") or []
             except Exception as e:

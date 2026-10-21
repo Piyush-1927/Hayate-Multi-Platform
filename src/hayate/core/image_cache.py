@@ -5,6 +5,7 @@ from pathlib import Path
 from hayate.core.settings import cache_dir, load_settings
 import certifi
 import httpx
+from hayate.core import net
 from PyQt6.QtCore import QRunnable, pyqtSignal, pyqtSlot, QObject, QThreadPool, QCoreApplication
 from PyQt6.QtGui import QImage, QPixmap
 
@@ -125,7 +126,7 @@ class ImageDownloadTask(QRunnable):
                 pass
 
         try:
-            with httpx.Client(timeout=7.0, verify=certifi.where()) as client:
+            with net.client(timeout=7.0, verify=certifi.where()) as client:
                 resp = client.get(self.url)
                 if resp.status_code == 200:
                     img = QImage()

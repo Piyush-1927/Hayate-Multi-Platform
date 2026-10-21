@@ -109,6 +109,12 @@ class MpvPlayerAdapter(QObject):
         }
 
         try:
+            from hayate.core import net as _net
+            options.update(_net.mpv_options())
+        except OSError as exc:  # proxy enabled but unusable: fail closed, never play direct
+            raise RuntimeError(f"Network proxy error: {exc}") from exc
+
+        try:
             self._mpv = mpv.MPV(**options)
             self._mpv.observe_property("time-pos", self._observe_property)
             self._mpv.observe_property("duration", self._observe_property)

@@ -1,4 +1,5 @@
 import urllib.request
+from hayate.core import net
 import urllib.error
 import json
 import time
@@ -62,28 +63,26 @@ class AnimeMedia:
 def _send_query(query: str, variables: Optional[dict] = None, _retried: bool = False) -> dict:
     payload = {"query": query, "variables": variables or {}}
     data_bytes = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        ANILIST_API_URL,
-        data=data_bytes,
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "Hayate/0.1",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=12) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        # AniList rate limit: wait the advertised time once, then retry.
-        if e.code == 429 and not _retried:
-            try:
-                wait = min(int(e.headers.get("Retry-After", "5")), 30)
-            except ValueError:
-                wait = 5
-            time.sleep(wait)
-            return _send_query(query, variables, _retried=True)
-        raise
+    with net.client(timeout=12) as _c:
+        resp = _c.post(
+            ANILIST_API_URL,
+            content=data_bytes,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "Hayate/0.1",
+            },
+        )
+    # AniList rate limit: wait the advertised time once, then retry.
+    if resp.status_code == 429 and not _retried:
+        try:
+            wait = min(int(resp.headers.get("Retry-After", "5")), 30)
+        except ValueError:
+            wait = 5
+        time.sleep(wait)
+        return _send_query(query, variables, _retried=True)
+    resp.raise_for_status()
+    result = resp.json()
 
     if result.get("errors") and not result.get("data"):
         msg = "; ".join(str(err.get("message", err)) for err in result["errors"])

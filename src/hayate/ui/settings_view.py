@@ -420,6 +420,36 @@ class SettingsView(QWidget):
         h_layout.addLayout(h_btns)
         layout.addWidget(card_hist)
 
+        # Card: Network & Privacy (always shown; the Tor toggle only appears if Tor is available)
+        from PyQt6.QtWidgets import QLineEdit
+        self.card_net = self._create_card("Network & Privacy")
+        n_layout = QVBoxLayout(self.card_net)
+        n_layout.setContentsMargins(24, 20, 24, 20)
+        n_layout.setSpacing(10)
+        self.net_desc = QLabel("Route metadata, search, posters, stream lookups and playback through a proxy. "
+                               "Devices on your LAN always connect directly. Restart Hayate after changing this. "
+                               "With a socks5h:// proxy or Tor, the proxy resolves DNS itself.")
+        self.net_desc.setWordWrap(True)
+        n_layout.addWidget(self.net_desc)
+        self.dns_check = QCheckBox("Private DNS (DNS-over-HTTPS)")
+        self.dns_check.toggled.connect(self._on_dns_toggled)
+        n_layout.addWidget(self.dns_check)
+        self.proxy_check = QCheckBox("Use custom proxy")
+        self.proxy_check.toggled.connect(self._on_proxy_toggled)
+        n_layout.addWidget(self.proxy_check)
+        self.proxy_edit = QLineEdit(self.settings.get("proxy_url", ""))
+        self.proxy_edit.setPlaceholderText("socks5h://127.0.0.1:1080   or   http://host:8080")
+        self.proxy_edit.editingFinished.connect(self._on_proxy_edited)
+        n_layout.addWidget(self.proxy_edit)
+        self.tor_check = QCheckBox("Route traffic through Tor")
+        self.tor_check.toggled.connect(self._on_tor_toggled)
+        n_layout.addWidget(self.tor_check)
+        self.net_status = QLabel("")
+        self.net_status.setWordWrap(True)
+        n_layout.addWidget(self.net_status)
+        layout.addWidget(self.card_net)
+        self._refresh_network()
+
         # Card 4: Storage & Cache Maintenance
         card_cache = self._create_card("Cache Maintenance")
         cache_layout = QVBoxLayout(card_cache)
@@ -750,6 +780,113 @@ class SettingsView(QWidget):
             save_settings(self.settings)
             Path(cache_dir() / "schedule_cache.json").unlink(missing_ok=True)
             self.settings_changed.emit()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._refresh_network()
+
+    @staticmethod
+    def _valid_proxy(url):
+        from urllib.parse import urlsplit
+        try:
+            u = urlsplit(url)
+            u.port
+        except ValueError:
+            return False
+        return u.scheme in ("http", "https", "socks5", "socks5h") and bool(u.hostname)
+
+    def _set_net_status(self, text, role="text_secondary"):
+        from hayate.core.theme import theme
+        self.net_status.setText(text)
+        self.net_status.setStyleSheet(
+            f"color: {theme.rgba(role)}; font-size: 12px; font-weight: 600; background: transparent;")
+
+    def _refresh_network(self):
+        from urllib.parse import urlsplit
+        from hayate.core import net
+        from hayate.core.theme import theme
+        mode = self.settings.get("proxy_mode", "off")
+        port = net.detect_tor()
+        self.net_desc.setStyleSheet(
+            f"color: {theme.rgba('text_secondary')}; font-size: 12px; background: transparent;")
+        self.tor_check.setVisible(port is not None or mode == "tor")  # hidden unless Tor is available
+        self.dns_check.blockSignals(True)
+        self.dns_check.setChecked(self.settings.get("dns_mode", "doh") == "doh")
+        self.dns_check.blockSignals(False)
+        for w, on in ((self.proxy_check, mode == "custom"), (self.tor_check, mode == "tor")):
+            w.blockSignals(True)
+            w.setChecked(on)
+            w.blockSignals(False)
+        if mode == "tor" and port is None:
+            self._set_net_status("Tor isn't running, so Hayate's network requests are blocked. "
+                                 "Start Tor or turn this off.", "danger")
+        elif mode == "tor":
+            self._set_net_status(f"Routing through Tor (127.0.0.1:{port}).", "accent")
+        elif mode == "custom":
+            url = self.settings.get("proxy_url", "")
+            if not self._valid_proxy(url):
+                self._set_net_status("The proxy URL is invalid, so network requests are blocked.", "danger")
+            else:
+                u = urlsplit(url)
+                note = " Tip: use socks5h:// so DNS isn't resolved locally." if u.scheme == "socks5" else ""
+                self._set_net_status(f"Routing through {u.scheme}://{u.hostname}:{u.port}.{note}", "accent")
+        else:
+            self._set_net_status("Direct connection with private DNS." if self.settings.get("dns_mode", "doh") == "doh"
+                                 else "Direct connection with system DNS.")
+
+    def _save_net(self):
+        from hayate.core import net
+        save_settings(self.settings)
+        net.invalidate()
+        self._refresh_network()
+        self.settings_changed.emit()
+
+    def _on_dns_toggled(self, on):
+        self.settings["dns_mode"] = "doh" if on else "system"
+        self._save_net()
+
+    def _on_proxy_toggled(self, on):
+        if on:
+            url = self.proxy_edit.text().strip()
+            if not self._valid_proxy(url):
+                self.proxy_check.blockSignals(True)
+                self.proxy_check.setChecked(False)
+                self.proxy_check.blockSignals(False)
+                QMessageBox.warning(self, "Invalid proxy",
+                                    "Enter a proxy URL like socks5h://127.0.0.1:1080 or http://host:8080.")
+                return
+            self.settings["proxy_url"] = url
+            self.settings["proxy_mode"] = "custom"
+        elif self.settings.get("proxy_mode") == "custom":
+            self.settings["proxy_mode"] = "off"
+        self._save_net()
+
+    def _on_proxy_edited(self):
+        url = self.proxy_edit.text().strip()
+        if url and not self._valid_proxy(url):
+            self._set_net_status("Invalid proxy URL (use http://, socks5:// or socks5h://host:port).", "danger")
+            return
+        self.settings["proxy_url"] = url
+        if not url and self.settings.get("proxy_mode") == "custom":
+            self.settings["proxy_mode"] = "off"
+        self._save_net()
+
+    def _on_tor_toggled(self, on):
+        from hayate.core import net
+        if on:
+            port = net.detect_tor()
+            if port is None:
+                self.tor_check.blockSignals(True)
+                self.tor_check.setChecked(False)
+                self.tor_check.blockSignals(False)
+                QMessageBox.warning(self, "Tor not found",
+                                    "No Tor service found on 127.0.0.1 (ports 9050 / 9150). Start Tor and try again.")
+                return
+            self.settings["tor_port"] = port
+            self.settings["proxy_mode"] = "tor"
+        elif self.settings.get("proxy_mode") == "tor":
+            self.settings["proxy_mode"] = "off"
+        self._save_net()
 
     def _export_history(self):
         if not history_mgr.data:

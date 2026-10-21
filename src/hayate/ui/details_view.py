@@ -3,6 +3,7 @@ import time
 from datetime import datetime
 import certifi
 import httpx
+from hayate.core import net
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QUrl
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
@@ -29,6 +30,7 @@ def get_net_mgr() -> QNetworkAccessManager:
     global _NET_MGR
     if _NET_MGR is None:
         _NET_MGR = QNetworkAccessManager()
+    _NET_MGR.setProxy(net.qt_proxy())
     return _NET_MGR
 
 class RelationCard(QFrame):

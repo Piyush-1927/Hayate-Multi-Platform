@@ -113,6 +113,14 @@ class PlayerController:
                 cmd.append("--http-header-fields=" + ",".join(f"{k}: {v}" for k, v in stream.headers.items()))
             for sub in stream.subtitles:
                 cmd.append(f"--sub-file={sub}")
+            try:
+                from hayate.core import net as _net
+                _u = _net.route_url()
+            except OSError as exc:  # proxy enabled but unusable: never play direct
+                finish("error", f"Network proxy error: {exc}")
+                return
+            if _u:
+                cmd.extend([f"--http-proxy={_u}", f"--ytdl-raw-options=proxy={_u}"])
             cmd.append(stream.url)
 
             try:

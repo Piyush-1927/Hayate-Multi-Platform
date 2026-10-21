@@ -75,6 +75,7 @@ class _Resolver(QThread):
     def _bgm(self, t):
         """Japanese name(s) for a Chinese title via Bangumi (cached on disk)."""
         import json, urllib.parse, urllib.request
+        from hayate.core import net
         from hayate.core.settings import config_dir
         if not hasattr(self, "_bc"):
             self._bf = config_dir() / "catalogue_bgm.json"
@@ -88,7 +89,10 @@ class _Resolver(QThread):
         for q in qs:
             try:
                 u = "https://api.bgm.tv/search/subject/" + urllib.parse.quote(q) + "?type=2&max_results=1"
-                r = json.load(urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": "Hayate/0.2"}), timeout=10))
+                with net.client(timeout=10, headers={"User-Agent": "Hayate/0.2"}) as _c:
+                    _resp = _c.get(u)
+                    _resp.raise_for_status()
+                    r = _resp.json()
                 names = [x["name"] for x in (r.get("list") or [])[:1] if x.get("name")]
             except Exception as e:
                 print(f"[catalogue] bangumi failed for {q!r}: {e}"); return []
