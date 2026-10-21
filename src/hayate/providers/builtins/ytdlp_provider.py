@@ -167,5 +167,50 @@ class YtDlpProvider(StreamProvider):
 
         return None
 
+    DEFAULT_CHANNELS = ("https://www.youtube.com/@MuseAsia", "https://www.youtube.com/@AniOneAsia")
+    _NOISE = re.compile(r"multi[- ]?subs?|full episodes?|playlist|english sub(bed)?|eng sub|\bsubbed\b|\bdubbed\b", re.I)
+
+    def _channel_urls(self):
+        from hayate.core.settings import config_dir
+        f = config_dir() / "catalogue_channels.txt"  # one channel URL per line, # = comment
+        extra = []
+        if f.is_file():
+            extra = [l.strip() for l in f.read_text().splitlines() if l.strip() and not l.startswith("#")]
+        return [*self.DEFAULT_CHANNELS, *extra]
+
+    def catalogue_titles(self, refresh=False):
+        """Series titles from official channels' playlists (cached 24h)."""
+        import time
+        from hayate.core.settings import config_dir
+        cache = config_dir() / "catalogue_cache.json"
+        if not refresh and cache.is_file():
+            try:
+                d = json.loads(cache.read_text())
+                if time.time() - d["t"] < 86400:
+                    return d["titles"]
+            except Exception:
+                pass
+        exe = self._find_ytdlp()
+        if not exe:
+            return []
+        seen, out = set(), []
+        for url in self._channel_urls():
+            try:
+                r = subprocess.run([exe, "--flat-playlist", "-J", "--no-warnings", url.rstrip("/") + "/playlists"],
+                                   capture_output=True, text=True, timeout=90, **_NOWIN)
+                entries = json.loads(r.stdout).get("entries") or []
+            except Exception as e:
+                print(f"[catalogue] {url}: {e}")
+                continue
+            for e in entries:
+                t = re.sub(r"\(.*?\)|\[.*?\]", "", e.get("title") or "")
+                t = re.sub(r"\s+", " ", self._NOISE.sub("", t)).strip(" |·-")
+                if len(t) > 2 and t.lower() not in seen:
+                    seen.add(t.lower()); out.append(t)
+        if out:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps({"t": time.time(), "titles": out}))
+        return out
+
     def carries(self, title: str):
         return True

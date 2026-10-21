@@ -21,6 +21,8 @@ DEFAULTS = {
     "allow_adult": False,
     "quality": "best",
     "preferred_audio": "sub",  # "sub", "dub_eng", "dub_hin", or "any"
+    "cache_enabled": True,
+    "cache_mb": 300,
 }
 
 def config_dir() -> Path:

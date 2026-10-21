@@ -273,6 +273,23 @@ def search_anime_sync(query: str, page: int = 1, per_page: int = 35,
     return kept, len(kept) != len(everything)
 
 
+def search_many_sync(titles: List[str], allow_adult: Optional[bool] = None) -> List[Optional[AnimeMedia]]:
+    """One AniList request for several titles: best match (or None) per title, same order."""
+    allow = _resolve_adult(allow_adult)
+    decl = ", ".join(f"$q{i}: String" for i in range(len(titles)))
+    body = "\n".join(
+        f"  a{i}: Page(page: 1, perPage: 1) {{ media(search: $q{i}, type: ANIME, "
+        f"sort: [SEARCH_MATCH, POPULARITY_DESC]) {{ {MEDIA_FIELDS} }} }}" for i in range(len(titles)))
+    res = _send_query(f"query ({decl}) {{\n{body}\n}}", {f"q{i}": t for i, t in enumerate(titles)})
+    data = res.get("data") or {}
+    out = []
+    for i in range(len(titles)):
+        nodes = (data.get(f"a{i}") or {}).get("media") or []
+        m = _parse_media_node(nodes[0]) if nodes else None
+        out.append(None if (m is not None and m.is_adult and not allow) else m)
+    return out
+
+
 def get_anime_by_id_sync(anime_id: int) -> Optional[AnimeMedia]:
     res_json = _send_query(ANIME_BY_ID_QUERY, {"id": anime_id})
     media = (res_json.get("data") or {}).get("Media")

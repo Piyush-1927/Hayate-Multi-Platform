@@ -336,8 +336,42 @@ class SettingsView(QWidget):
             """)
         layout.addWidget(card_tr)
 
-        from hayate.core.theme import ThemeSettingsCard
-        layout.addWidget(ThemeSettingsCard())
+        from hayate.core.theme import AppearanceLauncherCard
+        layout.addWidget(AppearanceLauncherCard())
+        # Card: Cache
+        from hayate.ui.cache_slider import ClickOnlySlider
+        card_cache = self._create_card("Cache")
+        cc = QVBoxLayout(card_cache)
+        cc.setContentsMargins(25, 20, 25, 20); cc.setSpacing(12)
+        _cd = QLabel("Poster cache on disk. Bigger means fewer re-downloads; the oldest posters are removed when the limit is reached.")
+        _cd.setWordWrap(True)
+        _cd.setStyleSheet("color: #94a3b8; font-size: 12px; border: none; background: transparent;")
+        cc.addWidget(_cd)
+        _cset = load_settings()
+        self.cache_check = QCheckBox("Enable cache")
+        self.cache_check.setChecked(bool(_cset.get("cache_enabled", True)))
+        self.cache_check.setStyleSheet(self.adult_checkbox.styleSheet())
+        cc.addWidget(self.cache_check)
+        cs_row = QHBoxLayout()
+        _cl = QLabel("Cache size:")
+        _cl.setStyleSheet("color: #ffffff; font-weight: 700; font-size: 13px; border: none; background: transparent;")
+        cs_row.addWidget(_cl)
+        self.cache_slider = ClickOnlySlider(25)
+        self.cache_slider.setRange(25, 2000)
+        self.cache_slider.setValue(int(_cset.get("cache_mb", 300)))
+        self.cache_slider.setStyleSheet(self.blur_slider.styleSheet())
+        self.cache_lbl = QLabel(f"{self.cache_slider.value()} MB")
+        self.cache_lbl.setMinimumWidth(72)
+        self.cache_lbl.setStyleSheet("color: #38bdf8; font-weight: 700; font-size: 13px; border: none; background: transparent;")
+        self.cache_slider.valueChanged.connect(lambda v: self.cache_lbl.setText(f"{v} MB"))
+        self.cache_slider.committed.connect(self._on_cache_commit)
+        self.cache_check.toggled.connect(self._on_cache_toggled)
+        self.cache_slider.setEnabled(self.cache_check.isChecked())
+        cs_row.addWidget(self.cache_slider, 1)
+        cs_row.addWidget(self.cache_lbl)
+        cc.addLayout(cs_row)
+        layout.addWidget(card_cache)
+
         # Card 3: Watch History & Backup
         card_hist = self._create_card("Watch History Management")
         h_layout = QVBoxLayout(card_hist)
@@ -538,6 +572,17 @@ class SettingsView(QWidget):
                     sb.setValue(sb.value() - dy)
             return True
         return super().eventFilter(obj, ev)
+
+    def _on_cache_toggled(self, on):
+        from hayate.core.image_cache import apply_cache_settings
+        s = load_settings(); s["cache_enabled"] = bool(on); save_settings(s)
+        self.cache_slider.setEnabled(bool(on))
+        apply_cache_settings()
+
+    def _on_cache_commit(self, mb):
+        from hayate.core.image_cache import apply_cache_settings
+        s = load_settings(); s["cache_mb"] = int(mb); save_settings(s)
+        apply_cache_settings()
 
     def _create_card(self, title_text: str) -> QFrame:
         card = QFrame()

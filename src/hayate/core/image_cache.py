@@ -2,7 +2,7 @@ import hashlib
 import os
 import threading
 from pathlib import Path
-from hayate.core.settings import cache_dir
+from hayate.core.settings import cache_dir, load_settings
 import certifi
 import httpx
 from PyQt6.QtCore import QRunnable, pyqtSignal, pyqtSlot, QObject, QThreadPool, QCoreApplication
@@ -11,8 +11,22 @@ from PyQt6.QtGui import QImage, QPixmap
 CACHE_DIR = cache_dir() / "img_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-MAX_CACHE_BYTES = 75 * 1024 * 1024  # 75 MB max
-TARGET_CACHE_BYTES = 55 * 1024 * 1024
+_cfg = {"on": True, "max": 300 * 1024 * 1024, "target": 225 * 1024 * 1024}
+
+
+def _load_cfg():
+    mb = 300
+    try:
+        s = load_settings()
+        mb = max(25, int(s.get("cache_mb", 300)))
+        _cfg["on"] = bool(s.get("cache_enabled", True))
+    except Exception:
+        pass
+    _cfg["max"] = mb * 1024 * 1024
+    _cfg["target"] = int(_cfg["max"] * 0.75)
+
+
+_load_cfg()
 
 _MEMORY_CACHE: dict[str, QPixmap] = {}
 _MAX_MEMORY_ITEMS = 150
@@ -36,7 +50,7 @@ def prune_disk_cache():
         return  # another prune is already running
     try:
         _bytes_since_prune = 0
-        if not CACHE_DIR.exists():
+        if not _cfg["on"] or not CACHE_DIR.exists():
             return
         in_use = {_cache_path_for(u).name for u in list(_MEMORY_CACHE.keys())}
         files = []
@@ -47,7 +61,7 @@ def prune_disk_cache():
                 files.append((entry.path, entry.name, stat.st_mtime, stat.st_size))
                 total_size += stat.st_size
 
-        if total_size <= MAX_CACHE_BYTES:
+        if total_size <= _cfg["max"]:
             return
 
         files.sort(key=lambda x: x[2])  # oldest first
@@ -57,7 +71,7 @@ def prune_disk_cache():
             try:
                 os.remove(path)
                 total_size -= size
-                if total_size <= TARGET_CACHE_BYTES:
+                if total_size <= _cfg["target"]:
                     break
             except OSError:
                 pass
@@ -101,7 +115,7 @@ class ImageDownloadTask(QRunnable):
 
         cache_path = _cache_path_for(self.url)
 
-        if cache_path.exists():
+        if _cfg["on"] and cache_path.exists():
             try:
                 cache_path.touch(exist_ok=True)
                 img = QImage()
@@ -117,8 +131,9 @@ class ImageDownloadTask(QRunnable):
                     img = QImage()
                     if img.loadFromData(resp.content):
                         try:
-                            cache_path.write_bytes(resp.content)
-                            _note_bytes_written(len(resp.content))
+                            if _cfg["on"]:
+                                cache_path.write_bytes(resp.content)
+                                _note_bytes_written(len(resp.content))
                         except Exception:
                             pass
                         return img
@@ -205,7 +220,7 @@ class ImageManager:
             return False
         if url in _MEMORY_CACHE:
             return True
-        return _cache_path_for(url).exists()
+        return _cfg["on"] and _cache_path_for(url).exists()
 
     def clear_cache(self):
         """Purges memory cache and all disk cache files safely."""
@@ -226,5 +241,19 @@ class ImageManager:
             self.pool.waitForDone(200)
         except Exception:
             pass
+
+def _clear_disk():
+    with _prune_lock:
+        for e in os.scandir(CACHE_DIR):
+            if e.is_file():
+                try: os.remove(e.path)
+                except OSError: pass
+
+
+def apply_cache_settings():
+    """Re-read settings: trim now if over the new limit, wipe disk files if disabled."""
+    _load_cfg()
+    QThreadPool.globalInstance().start(prune_disk_cache if _cfg["on"] else _clear_disk)
+
 
 image_mgr = ImageManager.get()

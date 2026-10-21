@@ -38,6 +38,8 @@ def clean_html(text: str) -> str:
     text = re.sub(r'<[^>]+>', '', text)
     return " ".join(text.split()).strip()
 
+from hayate.core.theme import theme
+
 _SPOTLIGHT_PIX_CACHE: dict[int, QPixmap] = {}
 _ANIME_META_CACHE: dict[int, AnimeMedia] = {}
 
@@ -120,7 +122,7 @@ class HamburgerButton(QPushButton):
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#f1f5f9"), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        pen = QPen(theme.c("text_primary"), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         cx = self.width() // 2
         cy = self.height() // 2
@@ -146,7 +148,7 @@ class ElidedParagraphLabel(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QColor("#cbd5e1"))
+        painter.setPen(theme.c("text_primary", 0.85))
         font = self.font()
         font.setPointSize(10)
         font.setWeight(400)
@@ -195,7 +197,7 @@ class ElidedTitleLabel(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QColor("#f1f5f9"))
+        painter.setPen(theme.c("text_primary"))
         font = self.font()
         font.setPointSize(10)
         font.setBold(True)
@@ -229,6 +231,7 @@ class ElidedTitleLabel(QWidget):
 class NavigationMenuPopup(QFrame):
     """Floating menu anchored to the hamburger button."""
     schedule_clicked = pyqtSignal()
+    catalogue_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -271,6 +274,10 @@ class NavigationMenuPopup(QFrame):
         btn_sched.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_sched.clicked.connect(self._on_sched)
         l.addWidget(btn_sched)
+        for text, sig in (("📚  Catalogue", self.catalogue_clicked),):
+            b = QPushButton(text); b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _, s=sig: (self.hide(), s.emit()))
+            l.addWidget(b)
 
     def _on_sched(self):
         self.hide()
@@ -401,14 +408,29 @@ class HoverPreviewPopup(QFrame):
 
     def track_card(self, card_widget: QWidget):
         self.active_card = card_widget
+        self._inactive_ticks = 0
         self.watch_timer.start()
 
     def _check_cursor_bounds(self):
+        aw = QApplication.activeWindow()
+        if aw is None or aw.isMinimized():
+            self._inactive_ticks = getattr(self, '_inactive_ticks', 0) + 1
+            if self._inactive_ticks >= 2:
+                self.watch_timer.stop()
+                self.active_card = None
+                self.hide()
+                return
+        else:
+            self._inactive_ticks = 0
         c_pos = QCursor.pos()
         if self.geometry().adjusted(-4, -4, 4, 4).contains(c_pos):
             return
 
-        if self.active_card and self.active_card.isVisible():
+        try:
+            _vis = bool(self.active_card and self.active_card.isVisible())
+        except RuntimeError:  # card was deleted (catalogue row scrolled away)
+            _vis = False
+        if _vis:
             card_origin = self.active_card.mapToGlobal(QPoint(0, 0))
             card_rect = QRectF(
                 float(card_origin.x()),
@@ -452,15 +474,15 @@ class HoverPreviewPopup(QFrame):
             scaled = _fit_pixmap(self, self.bg_pixmap)
             painter.drawPixmap(0, 0, scaled)
             grad = QLinearGradient(0, 0, 0, self.height())
-            grad.setColorAt(0.0, QColor(18, 18, 26, 220))
-            grad.setColorAt(0.4, QColor(18, 18, 26, 245))
-            grad.setColorAt(1.0, QColor(18, 18, 26, 255))
+            grad.setColorAt(0.0, theme.c("app_background", 0.86))
+            grad.setColorAt(0.4, theme.c("app_background", 0.96))
+            grad.setColorAt(1.0, theme.c("app_background"))
             painter.fillRect(self.rect(), QBrush(grad))
         else:
-            painter.fillRect(self.rect(), QColor(22, 22, 32))
+            painter.fillRect(self.rect(), theme.c("app_background"))
 
         painter.setClipping(False)
-        painter.setPen(QPen(QColor(56, 189, 248, 140), 1.5))
+        painter.setPen(QPen(theme.c("accent", 0.55), 1.5))
         painter.drawRoundedRect(rect, 14, 14)
 
 
@@ -543,7 +565,7 @@ class _PageOverlay(QWidget):
     def setup(self, snap, style, forward, k):
         bg = _QPM(snap.size())
         bg.setDevicePixelRatio(snap.devicePixelRatio())
-        bg.fill(QColor(_APP_BG))
+        bg.fill(theme.c("app_background"))
         pp = _QPT(bg)
         pp.drawPixmap(0, 0, snap)
         pp.end()
@@ -576,7 +598,7 @@ class AnimatedStack(QStackedWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         pal = self.palette()
-        pal.setColor(_PAL.ColorRole.Window, QColor(_APP_BG))
+        pal.setColor(_PAL.ColorRole.Window, theme.c("app_background"))
         self.setPalette(pal)
         self.setAutoFillBackground(True)
         self._ov = _PageOverlay(self)
@@ -746,14 +768,14 @@ class HeroSpotlightBanner(QWidget):
         nav_arrows.setSpacing(12)
         arrow_style = """
             QPushButton {
-                background-color: rgba(255, 255, 255, 0.12);
-                color: #ffffff;
+                background-color: @glass(0.12);
+                color: @glassfg;
                 font-size: 18px;
                 font-weight: bold;
                 border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 0.2);
+                border: 1px solid @glass(0.2);
             }
-            QPushButton:hover { background-color: rgba(255, 255, 255, 0.22); }
+            QPushButton:hover { background-color: @glass(0.22); }
         """
         self.prev_btn = QPushButton("<")
         self.prev_btn.setFixedSize(42, 42)
@@ -882,16 +904,16 @@ class HeroSpotlightBanner(QWidget):
             x_offset = max(0, round(scaled.width() / scaled.devicePixelRatio()) - self.width())
             painter.drawPixmap(-x_offset // 2, 0, scaled)
             grad = QLinearGradient(0, 0, self.width(), 0)
-            grad.setColorAt(0.0, QColor(20, 20, 30, 255))
-            grad.setColorAt(0.48, QColor(20, 20, 30, 230))
-            grad.setColorAt(0.78, QColor(20, 20, 30, 110))
-            grad.setColorAt(1.0, QColor(20, 20, 30, 50))
+            grad.setColorAt(0.0, theme.c("app_background"))
+            grad.setColorAt(0.48, theme.c("app_background", 0.9))
+            grad.setColorAt(0.62 if theme.is_light() else 0.78, theme.c("app_background", 0.15 if theme.is_light() else 0.43))
+            grad.setColorAt(1.0, theme.c("app_background", 0.0 if theme.is_light() else 0.2))
             painter.fillRect(self.rect(), QBrush(grad))
         else:
-            painter.fillRect(self.rect(), QColor(26, 26, 38))
+            painter.fillRect(self.rect(), theme.c("card_background"))
 
         painter.setClipping(False)
-        painter.setPen(QPen(QColor(255, 255, 255, 20), 1.0))
+        painter.setPen(QPen(theme.c("text_primary", 0.08), 1.0))
         painter.drawRoundedRect(rect, 16, 16)
 
 
@@ -942,8 +964,8 @@ class PosterImageWidget(QWidget):
             y = (self.height() - round(scaled.height() / _d)) // 2
             painter.drawPixmap(x, y, scaled)
         else:
-            painter.fillRect(self.rect(), QColor(28, 28, 42))
-            painter.setPen(QColor(80, 80, 110))
+            painter.fillRect(self.rect(), theme.c("card_background"))
+            painter.setPen(theme.c("text_secondary", 0.6))
             font = self.font()
             font.setPointSize(28)
             painter.setFont(font)
@@ -952,7 +974,7 @@ class PosterImageWidget(QWidget):
             font.setPointSize(9)
             font.setBold(True)
             painter.setFont(font)
-            painter.setPen(QColor(148, 163, 184))
+            painter.setPen(theme.c("text_secondary"))
             text_rect = QRectF(12, 120, self.width() - 24, 100)
             painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.fallback_title)
 
@@ -961,10 +983,10 @@ class PosterImageWidget(QWidget):
             y_bar = self.height() - bar_height
             painter.fillRect(QRectF(0, y_bar, self.width(), bar_height), QColor(0, 0, 0, 180))
             fill_width = (self.width() * self.progress_percent) / 100.0
-            painter.fillRect(QRectF(0, y_bar, fill_width, bar_height), QColor("#38bdf8"))
+            painter.fillRect(QRectF(0, y_bar, fill_width, bar_height), theme.c("accent"))
 
         painter.setClipping(False)
-        painter.setPen(QPen(QColor(60, 60, 85, 140), 1.2))
+        painter.setPen(QPen(theme.c("ui_border", 0.55), 1.2))
         painter.drawRoundedRect(rect, 12, 12)
 
 
@@ -1202,6 +1224,7 @@ class MainWindow(QMainWindow):
 
         self.nav_popup = NavigationMenuPopup(self)
         self.nav_popup.schedule_clicked.connect(self.open_schedule_view)
+        self.nav_popup.catalogue_clicked.connect(self.open_catalogue_view)
 
         self.menu_btn = HamburgerButton()
         self.menu_btn.clicked.connect(self.toggle_nav_popup)
@@ -1352,6 +1375,18 @@ class MainWindow(QMainWindow):
         self.settings_view.settings_changed.connect(self.load_home)
         self.stack.addWidget(self.settings_view)
 
+        from hayate.ui.appearance_view import AppearanceView
+        from hayate.ui.catalogue_view import CatalogueView
+        self.appearance_view = AppearanceView()
+        self.appearance_view.back_requested.connect(self.open_settings_view)
+        self.stack.addWidget(self.appearance_view)
+        self.catalogue_view = CatalogueView()
+        self.catalogue_view.back_requested.connect(self.on_back_to_home)
+        self.catalogue_view.card_clicked.connect(self.open_details_view)
+        self.catalogue_view.card_hovered.connect(self._show_hover_preview)
+        self.catalogue_view.scrolled.connect(self.hover_preview.hide)
+        self.stack.addWidget(self.catalogue_view)
+
         # Search View (Page 4)
         self.search_view = SearchView(poster_card_cls=PosterCard)
         self.search_view.back_requested.connect(self.on_back_to_home)
@@ -1380,7 +1415,7 @@ class MainWindow(QMainWindow):
         shelf.card_hovered.connect(self._show_hover_preview)
 
     def _show_hover_preview(self, anime: AnimeMedia, global_pos: QPoint, card_widget: QWidget):
-        if self.stack.currentIndex() != 0:
+        if self.stack.currentIndex() != 0 and self.stack.currentWidget() is not self.catalogue_view:
             return
         self.hover_preview.set_anime(anime)
 
@@ -1454,6 +1489,18 @@ class MainWindow(QMainWindow):
         self.progress.setVisible(False)
         self.schedule_view.load_schedule()
         self.stack.setCurrentWidget(self.schedule_view)
+
+    def open_appearance_view(self): self._open_page(self.appearance_view)
+
+    def open_catalogue_view(self):
+        self.catalogue_view.load()
+        self._open_page(self.catalogue_view)
+
+    def _open_page(self, page):
+        self.spotlight_timer.stop()
+        self.hover_preview.hide()
+        self.progress.setVisible(False)
+        self.stack.setCurrentWidget(page)
 
     def on_back_to_home(self):
         self.progress.setVisible(False)
