@@ -752,39 +752,59 @@ class SettingsView(QWidget):
             self.settings_changed.emit()
 
     def _export_history(self):
-        hist_path = history_mgr.file_path
-        if not hist_path.exists():
+        if not history_mgr.data:
             QMessageBox.information(self, "Export Notice", "No watch history recorded yet.")
             return
-
         file_dest, _ = dlg_save(
             self, "Export Watch History", "hayate_history_backup.json", "JSON Files (*.json)"
         )
-        if file_dest:
-            try:
-                data = hist_path.read_text(encoding="utf-8")
-                Path(file_dest).write_text(data, encoding="utf-8")
-                QMessageBox.information(self, "Export Complete", f"Watch history exported successfully to:\n{file_dest}")
-            except Exception as e:
-                QMessageBox.warning(self, "Export Error", f"Failed to export history: {e}")
+        if not file_dest:
+            return
+        try:
+            Path(file_dest).write_text(
+                json.dumps(history_mgr.export_payload(), indent=2, ensure_ascii=False), encoding="utf-8")
+            QMessageBox.information(self, "Export Complete",
+                f"Exported {len(history_mgr.data)} anime to:\n{file_dest}")
+        except Exception as e:
+            QMessageBox.warning(self, "Export Error", f"Failed to export history: {e}")
 
     def _import_history(self):
         file_src, _ = dlg_open(
             self, "Import Watch History Backup", "", "JSON Files (*.json)"
         )
-        if file_src:
-            try:
-                content = Path(file_src).read_text(encoding="utf-8")
-                parsed = json.loads(content)
-                if isinstance(parsed, dict):
-                    history_mgr.data = parsed
-                    history_mgr._save()
-                    QMessageBox.information(self, "Import Complete", "Watch history restored successfully!")
-                    self.settings_changed.emit()
-                else:
-                    QMessageBox.warning(self, "Invalid Backup", "The selected JSON file is not a valid Hayate history backup.")
-            except Exception as e:
-                QMessageBox.warning(self, "Import Error", f"Failed to read backup: {e}")
+        if not file_src:
+            return
+        try:
+            incoming = history_mgr.parse_backup(json.loads(Path(file_src).read_text(encoding="utf-8")))
+        except Exception as e:
+            QMessageBox.warning(self, "Invalid Backup", f"This is not a valid Hayate history backup.\n\n{e}")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Import Watch History")
+        box.setText(f"The backup contains {len(incoming)} anime.")
+        box.setInformativeText(
+            "Merge keeps your current history and adds the backup to it.\n"
+            "Replace overwrites it (a .bak copy of the old file is kept).")
+        merge_btn = box.addButton("Merge", QMessageBox.ButtonRole.AcceptRole)
+        replace_btn = box.addButton("Replace", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(merge_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        try:
+            if clicked is merge_btn:
+                added, updated = history_mgr.merge(incoming)
+                msg = f"Merged: {added} added, {updated} updated."
+            elif clicked is replace_btn:
+                history_mgr.replace(incoming)
+                msg = f"History replaced with {len(incoming)} anime."
+            else:
+                return
+        except Exception as e:
+            QMessageBox.warning(self, "Import Error", f"Failed to import: {e}")
+            return
+        QMessageBox.information(self, "Import Complete", msg)
+        self.settings_changed.emit()
 
     def _clear_cache(self, *args):
         try:
