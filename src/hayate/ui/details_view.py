@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 from hayate.core.anilist import AnimeMedia
 from hayate.core.player import PlayerController
 from hayate.core.history import history_mgr
+from hayate.core.theme import theme
 
 def clean_html(text: str) -> str:
     if not text:
@@ -120,6 +121,8 @@ class DetailsView(QWidget):
         self.active_ep: int = 1
         self.current_chunk: int = 0
         self.ep_buttons: dict[int, QPushButton] = {}
+        self._watched: set[int] = set()
+        theme.changed.connect(self._restyle_eps)
         self.chunk_buttons: list[QPushButton] = []
 
         main_layout = QVBoxLayout(self)
@@ -270,8 +273,7 @@ class DetailsView(QWidget):
         self.audio_combo.addItem("Any Dub", "any_dub")
 
         # Sync with existing saved preference
-        pref_audio = self.player.settings.get("preferred_audio", "sub") if hasattr(self.player, "settings") else "sub"
-        found_idx = self.audio_combo.findData(pref_audio)
+        found_idx = self.audio_combo.findData(self._saved_audio())
         if found_idx >= 0:
             self.audio_combo.setCurrentIndex(found_idx)
         self.audio_combo.currentIndexChanged.connect(self._on_audio_pref_changed)
@@ -401,7 +403,11 @@ class DetailsView(QWidget):
 
         total_ep = max(1, anime.episodes)
         self._build_chunk_bar(total_ep)
-        self._load_chunk(0)
+        start = history_mgr.get_resume_episode(anime.id, total_ep)
+        self.active_ep = start
+        self._load_chunk((start - 1) // 100)
+        if start in self.ep_buttons and getattr(self, "scroll_area", None):
+            QTimer.singleShot(0, lambda b=self.ep_buttons.get(start): b and self.scroll_area.ensureWidgetVisible(b))
 
         # Relations
         while self.rel_inner_layout.count():
@@ -534,6 +540,8 @@ class DetailsView(QWidget):
 
         if self.active_ep in self.ep_buttons:
             self._highlight_button(self.active_ep)
+        else:
+            self._restyle_eps()
 
     def on_jump_requested(self):
         text = self.jump_input.text().strip()
@@ -555,36 +563,59 @@ class DetailsView(QWidget):
         # Select only. Playback starts from the Play button.
         self._highlight_button(ep)
 
+    def _ep_qss(self, num: int) -> str:
+        if num == self.active_ep:
+            return """
+                QPushButton {
+                    background-color: #38bdf8;
+                    color: #090a0f;
+                    border: none;
+                    border-radius: 6px;
+                    font-weight: 800;
+                    font-size: 12px;
+                }
+            """
+        if num in self._watched:
+            return f"""
+                QPushButton {{
+                    background-color: {theme.rgba('button_background', 0.45)};
+                    color: {theme.rgba('text_secondary', 0.85)};
+                    border: 1px solid {theme.rgba('ui_border', 0.5)};
+                    border-radius: 6px;
+                    font-weight: 600;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{
+                    background-color: {theme.rgba('hover')};
+                    color: {theme.rgba('text_primary')};
+                    border-color: {theme.rgba('accent')};
+                }}
+            """
+        return """
+            QPushButton {
+                background-color: #242436;
+                color: #e2e8f0;
+                border: 1px solid #383852;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #2d2d44;
+                border-color: #38bdf8;
+            }
+        """
+
+    def _restyle_eps(self):
+        anime = getattr(self, "anime", None)
+        self._watched = history_mgr.get_watched_episodes(anime.id) if anime else set()
+        for num, btn in self.ep_buttons.items():
+            btn.setStyleSheet(self._ep_qss(num))
+
     def _highlight_button(self, ep: int):
         self.active_ep = ep
         self.play_main_btn.setText(f"▶ Play EP {ep}")
-        for num, btn in self.ep_buttons.items():
-            if num == ep:
-                btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #38bdf8;
-                        color: #090a0f;
-                        border: none;
-                        border-radius: 6px;
-                        font-weight: 800;
-                        font-size: 12px;
-                    }
-                """)
-            else:
-                btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #242436;
-                        color: #e2e8f0;
-                        border: 1px solid #383852;
-                        border-radius: 6px;
-                        font-weight: 600;
-                        font-size: 12px;
-                    }
-                    QPushButton:hover {
-                        background-color: #2d2d44;
-                        border-color: #38bdf8;
-                    }
-                """)
+        self._restyle_eps()
 
     def auto_play_episode(self, ep_num: int):
         def _do_play():
@@ -618,15 +649,28 @@ class DetailsView(QWidget):
             return f"EP {ep} hasn't aired yet. EP {a.airing_episode} is scheduled for {when}."
         return None
 
+    def _saved_audio(self):
+        from hayate.core.settings import load_settings
+        st = load_settings()
+        aid = str(self.anime.id) if getattr(self, "anime", None) else None
+        return st.get("anime_audio_overrides", {}).get(aid) or st.get("preferred_audio", "sub")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        i = self.audio_combo.findData(self._saved_audio())
+        if i >= 0 and i != self.audio_combo.currentIndex():
+            self.audio_combo.blockSignals(True)
+            self.audio_combo.setCurrentIndex(i)
+            self.audio_combo.blockSignals(False)
+
     def _on_audio_pref_changed(self, idx: int):
         if not self.anime:
             return
         val = self.audio_combo.itemData(idx)
-        if hasattr(self.player, "settings"):
-            from hayate.core.settings import save_settings
-            overrides = self.player.settings.setdefault("anime_audio_overrides", {})
-            overrides[str(self.anime.id)] = val
-            save_settings(self.player.settings)
+        from hayate.core.settings import load_settings, save_settings
+        st = load_settings()
+        st.setdefault("anime_audio_overrides", {})[str(self.anime.id)] = val
+        save_settings(st)
 
     def play_episode(self, ep: int):
         if not self.anime:

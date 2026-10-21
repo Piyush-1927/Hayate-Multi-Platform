@@ -60,7 +60,7 @@ class AnimeMedia:
 # Transport
 # --------------------------------------------------------------------------
 
-def _send_query(query: str, variables: Optional[dict] = None, _retried: bool = False) -> dict:
+def _send_query_net(query: str, variables: Optional[dict] = None, _retried: bool = False) -> dict:
     payload = {"query": query, "variables": variables or {}}
     data_bytes = json.dumps(payload).encode("utf-8")
     with net.client(timeout=12) as _c:
@@ -80,13 +80,63 @@ def _send_query(query: str, variables: Optional[dict] = None, _retried: bool = F
         except ValueError:
             wait = 5
         time.sleep(wait)
-        return _send_query(query, variables, _retried=True)
+        return _send_query_net(query, variables, _retried=True)
     resp.raise_for_status()
     result = resp.json()
 
     if result.get("errors") and not result.get("data"):
         msg = "; ".join(str(err.get("message", err)) for err in result["errors"])
         raise RuntimeError(f"AniList error: {msg}")
+    return result
+
+
+API_CACHE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _api_cache_file(query: str, variables: Optional[dict]):
+    import hashlib
+    key = hashlib.sha1(
+        (query + json.dumps(variables or {}, sort_keys=True)).encode("utf-8")
+    ).hexdigest()
+    d = cache_dir() / "api"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{key}.json"
+
+
+def _api_cache_prune(d):
+    try:
+        files = sorted(d.glob("*.json"), key=lambda f: f.stat().st_mtime)
+        total = sum(f.stat().st_size for f in files)
+        while files and total > API_CACHE_MAX_BYTES:
+            f = files.pop(0)
+            total -= f.stat().st_size
+            f.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _send_query(query: str, variables: Optional[dict] = None, _retried: bool = False) -> dict:
+    """Network call with an on-disk fallback: any failure (offline, 403 outage,
+    timeout) serves the last good response for the same query."""
+    try:
+        path = _api_cache_file(query, variables)
+    except Exception:
+        path = None
+    try:
+        result = _send_query_net(query, variables, _retried)
+    except Exception:
+        if path is not None:
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))["result"]
+            except Exception:
+                pass
+        raise
+    if path is not None:
+        try:
+            path.write_text(json.dumps({"fetched_at": time.time(), "result": result}), encoding="utf-8")
+            _api_cache_prune(path.parent)
+        except Exception:
+            pass
     return result
 
 
@@ -401,7 +451,17 @@ def get_home_shelves_sync(allow_adult: Optional[bool] = None, use_cache: bool = 
             pass
 
     month_ago = _fuzzy_int(date.today() - timedelta(days=30))
-    res_json = _send_query(_home_query(allow), {"monthAgo": month_ago})
+    try:
+        res_json = _send_query(_home_query(allow), {"monthAgo": month_ago})
+    except Exception:
+        # offline / API down: serve the last good cache, however old
+        try:
+            blob = json.loads(path.read_text(encoding="utf-8"))
+            if blob.get("allow_adult") == allow and blob.get("data"):
+                return build_shelves(blob["data"], allow)
+        except Exception:
+            pass
+        raise
     data = res_json.get("data") or {}
     try:
         path.write_text(json.dumps({

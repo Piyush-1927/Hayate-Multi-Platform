@@ -92,6 +92,47 @@ class HistoryManager:
 
         return min(last or 1, total_episodes)
 
+    # ---- per-episode playback position ---------------------------------
+    def set_progress(self, anime_id: int, episode: int, pos_s: float, dur_s: float):
+        entry = self.data.get(str(anime_id))
+        if not entry or dur_s <= 0 or pos_s < 0:
+            return
+        prog = entry.setdefault("progress", {})
+        key = str(episode)
+        if pos_s >= dur_s * 0.9:  # finished: drop the resume point, keep it watched
+            if prog.pop(key, None) is not None:
+                self._dirty = True
+            watched = entry.setdefault("watched_episodes", [])
+            if episode not in watched:
+                watched.append(episode)
+                watched.sort()
+                self._dirty = True
+        elif pos_s >= 10:
+            prog[key] = {"pos": round(pos_s, 1), "dur": round(dur_s, 1)}
+            self._dirty = True
+        if getattr(self, "_dirty", False) and time.time() - getattr(self, "_last_flush", 0.0) >= 5:
+            self.flush()
+
+    def get_progress(self, anime_id: int, episode: int):
+        """(position_s, duration_s) for a partly watched episode, else None."""
+        p = ((self.data.get(str(anime_id)) or {}).get("progress") or {}).get(str(episode))
+        if p and p.get("dur", 0) > 0 and p.get("pos", 0) > 0:
+            return float(p["pos"]), float(p["dur"])
+        return None
+
+    def get_resume_episode(self, anime_id: int, total_episodes: int) -> int:
+        entry = self.data.get(str(anime_id)) or {}
+        last = entry.get("last_episode")
+        if last and self.get_progress(anime_id, last):
+            return int(last)
+        return self.get_next_episode(anime_id, total_episodes)
+
+    def flush(self):
+        if getattr(self, "_dirty", False):
+            self._dirty = False
+            self._last_flush = time.time()
+            self._save()
+
     def get_recent_history(self, limit: int = 10) -> list[dict]:
         items = list(self.data.values())
         items.sort(key=lambda x: x.get("updated_at", 0), reverse=True)
@@ -130,6 +171,17 @@ class HistoryManager:
                 upd = int(v.get("updated_at", 0) or 0)
             except (TypeError, ValueError):
                 continue
+            prog = {}
+            raw = v.get("progress")
+            if isinstance(raw, dict):
+                for ek, ev in raw.items():
+                    try:
+                        pos, dur = float(ev["pos"]), float(ev["dur"])
+                        int(ek)
+                    except (TypeError, ValueError, KeyError):
+                        continue
+                    if pos > 0 and dur > 0:
+                        prog[str(int(ek))] = {"pos": round(pos, 1), "dur": round(dur, 1)}
             clean[str(aid)] = {
                 "id": aid,
                 "title": str(v.get("title", "")),
@@ -139,6 +191,7 @@ class HistoryManager:
                 "updated_at": upd,
                 "total_episodes": v["total_episodes"] if isinstance(v.get("total_episodes"), int) and v["total_episodes"] > 0 else 0,
                 "banner_url": str(v.get("banner_url", "")),
+                "progress": prog,
             }
         if not clean:
             raise ValueError("no valid watch history entries found")
@@ -159,6 +212,15 @@ class HistoryManager:
                 for f in ("title", "cover_url", "last_episode", "updated_at"):
                     if new.get(f) not in ("", None):
                         entry[f] = new[f]
+            prog = dict(cur.get("progress") or {})
+            newer = new["updated_at"] > cur.get("updated_at", 0)
+            for ek, ev in (new.get("progress") or {}).items():
+                if newer or ek not in prog:
+                    prog[ek] = ev
+            done = set(entry["watched_episodes"])
+            prog = {ek: ev for ek, ev in prog.items() if int(ek) not in done}
+            if prog or "progress" in cur:
+                entry["progress"] = prog
             if entry != cur:
                 updated += 1
             self.data[key] = entry

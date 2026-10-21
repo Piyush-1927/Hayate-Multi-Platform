@@ -75,7 +75,8 @@ def _title_for(view, card):
         return None
     for name, title in (("prov_combo", "Providers"), ("adult_checkbox", "Content"),
                         ("trans_combo", "Transitions"), ("clear_btn", "Image cache"),
-                        ("btn_toggle_server", "LAN streaming")):
+                        ("btn_toggle_server", "LAN streaming"),
+                        ("dns_check", "Security")):
         w = getattr(view, name, None)
         if w is not None and card.isAncestorOf(w):
             return title

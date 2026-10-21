@@ -387,7 +387,7 @@ class HoverPreviewPopup(QFrame):
             self.play_btn.setVisible(True)
             watched = history_mgr.get_watched_episodes(anime.id)
             if watched:
-                next_ep = history_mgr.get_next_episode(anime.id, total)
+                next_ep = history_mgr.get_resume_episode(anime.id, total)
                 self.target_ep = next_ep
                 self.badge_lbl.setText(f"CONTINUE WATCHING • EP {next_ep}")
                 self.play_btn.setText(f"▶ Play EP {next_ep}")
@@ -1593,6 +1593,69 @@ class MainWindow(QMainWindow):
         if history_mgr.remove(anime.id):
             self._refresh_history_shelf()
 
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not getattr(self, "_fitted", False):
+            self._fitted = True
+            QTimer.singleShot(0, self._fit_to_screen)
+            QTimer.singleShot(200, self._fit_to_screen)  # WM frame is final by now
+
+    def _fit_to_screen(self):
+        """Fill the screen's usable area exactly: not maximized, not fullscreen."""
+        if self.isMaximized() or self.isFullScreen():
+            return
+        import sys
+        if sys.platform == "win32" and self._fit_win32():
+            return
+        scr = self.screen() or QApplication.primaryScreen()
+        if not scr:
+            return
+        a = scr.availableGeometry()
+        fg, g = self.frameGeometry(), self.geometry()
+        l, t = g.x() - fg.x(), g.y() - fg.y()
+        r, b = fg.right() - g.right(), fg.bottom() - g.bottom()
+        w, h = a.width() - l - r, a.height() - t - b
+        if QApplication.platformName() == "wayland":
+            self.resize(w, h)  # compositor owns position
+        else:
+            self.setGeometry(a.x() + l, a.y() + t, w, h)
+
+    def _fit_win32(self) -> bool:
+        try:
+            import ctypes
+            from ctypes import wintypes as w
+            u, d = ctypes.windll.user32, ctypes.windll.dwmapi
+
+            class MI(ctypes.Structure):
+                _fields_ = [("cbSize", w.DWORD), ("rcMonitor", w.RECT),
+                            ("rcWork", w.RECT), ("dwFlags", w.DWORD)]
+
+            u.MonitorFromWindow.argtypes = [w.HWND, w.DWORD]
+            u.MonitorFromWindow.restype = w.HANDLE
+            u.GetMonitorInfoW.argtypes = [w.HANDLE, ctypes.POINTER(MI)]
+            u.SetWindowPos.argtypes = [w.HWND, w.HWND, ctypes.c_int, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, w.UINT]
+            d.DwmGetWindowAttribute.argtypes = [w.HWND, w.DWORD, ctypes.c_void_p, w.DWORD]
+
+            hwnd = w.HWND(int(self.winId()))
+            mi = MI()
+            mi.cbSize = ctypes.sizeof(MI)
+            u.GetMonitorInfoW(u.MonitorFromWindow(hwnd, 2), ctypes.byref(mi))
+            win, vis = w.RECT(), w.RECT()
+            u.GetWindowRect(hwnd, ctypes.byref(win))
+            # DWMWA_EXTENDED_FRAME_BOUNDS = 9: the visible frame, without invisible borders
+            if d.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(vis), ctypes.sizeof(vis)) != 0:
+                vis = win
+            il, it = vis.left - win.left, vis.top - win.top
+            ir, ib = win.right - vis.right, win.bottom - vis.bottom
+            wk = mi.rcWork
+            u.SetWindowPos(hwnd, None, wk.left - il, wk.top - it,
+                           (wk.right - wk.left) + il + ir, (wk.bottom - wk.top) + it + ib,
+                           0x0004 | 0x0010)  # SWP_NOZORDER | SWP_NOACTIVATE
+            return True
+        except Exception:
+            return False
+
     def _refresh_history_shelf(self):
         recent = history_mgr.get_recent_history()
         if not recent:
@@ -1607,10 +1670,14 @@ class MainWindow(QMainWindow):
             total = max(h.get("total_episodes") or 1, h.get("last_episode", 1), 1)
             last = h.get("last_episode", 1)
 
-            if total > 1:
-                progress = min(95.0, (last / total) * 100.0)
-            else:
-                progress = 25.0
+            watched = set(h.get("watched_episodes") or [])
+            done = len(watched) if watched else max(last - 1, 0)  # old entries lack the list
+            frac = 0.0
+            if last not in watched:
+                pr = history_mgr.get_progress(h["id"], last)
+                if pr:
+                    frac = min(pr[0] / pr[1], 1.0)
+            progress = max(3.0, min(100.0, (done + frac) / total * 100.0))
 
             # Pull cached description if available
             cached_desc = ""
@@ -1799,7 +1866,7 @@ class MainWindow(QMainWindow):
         if not self.spotlight_items:
             return
         anime = self.spotlight_items[self.spotlight_index]
-        ep = history_mgr.get_next_episode(anime.id, anime.episodes or 1)
+        ep = history_mgr.get_resume_episode(anime.id, anime.episodes or 1)
         self.play_anime_episode(anime, ep)
 
     def on_error(self, msg: str):

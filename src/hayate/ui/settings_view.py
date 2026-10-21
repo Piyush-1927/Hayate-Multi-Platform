@@ -430,11 +430,14 @@ class SettingsView(QWidget):
                                "Devices on your LAN always connect directly. Restart Hayate after changing this. "
                                "With a socks5h:// proxy or Tor, the proxy resolves DNS itself.")
         self.net_desc.setWordWrap(True)
+        self.net_desc.setStyleSheet("color: #94a3b8; font-size: 12px;")
         n_layout.addWidget(self.net_desc)
         self.dns_check = QCheckBox("Private DNS (DNS-over-HTTPS)")
+        self.dns_check.setStyleSheet(self.adult_checkbox.styleSheet())
         self.dns_check.toggled.connect(self._on_dns_toggled)
         n_layout.addWidget(self.dns_check)
         self.proxy_check = QCheckBox("Use custom proxy")
+        self.proxy_check.setStyleSheet(self.adult_checkbox.styleSheet())
         self.proxy_check.toggled.connect(self._on_proxy_toggled)
         n_layout.addWidget(self.proxy_check)
         self.proxy_edit = QLineEdit(self.settings.get("proxy_url", ""))
@@ -442,6 +445,7 @@ class SettingsView(QWidget):
         self.proxy_edit.editingFinished.connect(self._on_proxy_edited)
         n_layout.addWidget(self.proxy_edit)
         self.tor_check = QCheckBox("Route traffic through Tor")
+        self.tor_check.setStyleSheet(self.adult_checkbox.styleSheet())
         self.tor_check.toggled.connect(self._on_tor_toggled)
         n_layout.addWidget(self.tor_check)
         self.net_status = QLabel("")
@@ -655,6 +659,7 @@ class SettingsView(QWidget):
         """Reloads providers from disk and syncs the dropdown without restarting."""
         self.providers = load_providers()
         current_key = self.settings.get("provider", "ytdlp")
+        fell_back = False
 
         self.prov_combo.blockSignals(True)
         self.prov_combo.clear()
@@ -673,12 +678,16 @@ class SettingsView(QWidget):
                 if key == current_key:
                     active_idx = idx
             if current_key not in real_providers:
-                active_idx = 0
-            self.settings["provider"] = "ytdlp"
-            save_settings(self.settings)
+                fb = "ytdlp" if "ytdlp" in real_providers else next(iter(real_providers))
+                active_idx = list(real_providers).index(fb)
+                self.settings["provider"] = fb
+                save_settings(self.settings)
+                fell_back = True
 
         self.prov_combo.setCurrentIndex(active_idx)
         self.prov_combo.blockSignals(False)
+        if fell_back:
+            self.settings_changed.emit()
 
     def _on_transition_changed(self, idx: int):
         d = load_settings()
@@ -807,8 +816,6 @@ class SettingsView(QWidget):
         from hayate.core.theme import theme
         mode = self.settings.get("proxy_mode", "off")
         port = net.detect_tor()
-        self.net_desc.setStyleSheet(
-            f"color: {theme.rgba('text_secondary')}; font-size: 12px; background: transparent;")
         self.tor_check.setVisible(port is not None or mode == "tor")  # hidden unless Tor is available
         self.dns_check.blockSignals(True)
         self.dns_check.setChecked(self.settings.get("dns_mode", "doh") == "doh")

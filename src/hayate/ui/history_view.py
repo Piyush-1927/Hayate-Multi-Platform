@@ -90,7 +90,12 @@ class HistoryView(QWidget):
         last = int(h.get("last_episode") or 0)
         total = int(h.get("total_episodes") or 0)
         done = len(watched)
-        progress = min(100.0, done / total * 100.0) if total > 0 else 0.0
+        frac = 0.0
+        if last and last not in watched:
+            pr = (h.get("progress") or {}).get(str(last))
+            if pr and pr.get("dur", 0) > 0:
+                frac = min(pr.get("pos", 0) / pr["dur"], 1.0)
+        progress = min(100.0, (done + frac) / total * 100.0) if total > 0 else 0.0
 
         cached = _ANIME_META_CACHE.get(h["id"])
         media = AnimeMedia(

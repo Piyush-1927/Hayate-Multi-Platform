@@ -174,10 +174,47 @@ class MpvPlayerAdapter(QObject):
             self._state = state
             self.playbackStateChanged.emit(state)
 
-    def setSource(self, url):
+    def setSource(self, url, referer="", headers=None, subtitles=()):
+        self._referer = referer or ""
+        self._headers = dict(headers or {})
+        self._subs = [s for s in (subtitles or ()) if s]
         self._source = url.toEncoded().data().decode("ascii") if hasattr(url, "toString") else str(url)
         self._position_ms = 0
         self._duration_ms = 0
+
+    def setStartPosition(self, seconds):
+        """One-shot: the next setSource()/play() starts at this position."""
+        self._start_s = max(0.0, float(seconds or 0))
+
+    def _apply_stream_options(self):
+        """Per-stream Referer/headers (set before loadfile) and external subtitles (added once loaded)."""
+        try:
+            s = getattr(self, "_start_s", 0.0)
+            self._mpv["start"] = f"{s:.1f}" if s > 0 else "none"
+            self._start_s = 0.0
+        except Exception:
+            pass
+        try:
+            self._mpv["referrer"] = getattr(self, "_referer", "") or ""
+        except Exception:
+            pass
+        try:
+            hdr = [f"{k}: {v}" for k, v in (getattr(self, "_headers", None) or {}).items()]
+            self._mpv["http-header-fields"] = hdr
+        except Exception:
+            pass
+        self._pending_subs = list(getattr(self, "_subs", []))
+        if not getattr(self, "_sub_hook", False):
+            self._sub_hook = True
+
+            @self._mpv.event_callback("file-loaded")
+            def _on_loaded(_event):
+                subs, self._pending_subs = self._pending_subs, []
+                for u in subs:
+                    try:
+                        self._mpv.command("sub-add", u, "select")
+                    except Exception:
+                        pass
 
     def play(self):
         if self._closed:
@@ -189,10 +226,15 @@ class MpvPlayerAdapter(QObject):
                 source = self._source
                 self._source = None
                 self._mpv.pause = False
+                self._apply_stream_options()
                 self._mpv.loadfile(source, mode="replace")
             elif bool(self._mpv.eof_reached):
                 # With keep_open=yes, seeking/unpausing alone didn't recover
                 # at EOF in the installed mpv build. Reload the active source.
+                try:
+                    self._mpv["start"] = "none"  # EOF replay must start from 0
+                except Exception:
+                    pass
                 source = self._mpv.path
                 if source:
                     self._mpv.loadfile(source, mode="replace")
@@ -252,6 +294,38 @@ class MpvPlayerAdapter(QObject):
             if duration is not None:
                 target = min(float(duration), target)
             self._mpv.seek(target, reference="absolute", precision="exact")
+        except Exception as exc:
+            self.errorOccurred.emit(str(exc))
+
+    def setSpeed(self, rate):
+        if self._closed:
+            return
+        try:
+            self._mpv.speed = float(rate)
+        except Exception as exc:
+            self.errorOccurred.emit(str(exc))
+
+    def speed(self):
+        try:
+            return float(self._mpv.speed)
+        except Exception:
+            return 1.0
+
+    def subtitleTracks(self):
+        """mpv subtitle tracks: dicts with id, title, lang, selected."""
+        if self._closed:
+            return []
+        try:
+            return [t for t in (self._mpv.track_list or []) if t.get("type") == "sub"]
+        except Exception:
+            return []
+
+    def setSubtitleTrack(self, sid):
+        """sid=None/0 turns captions off."""
+        if self._closed:
+            return
+        try:
+            self._mpv.sid = int(sid) if sid else "no"
         except Exception as exc:
             self.errorOccurred.emit(str(exc))
 

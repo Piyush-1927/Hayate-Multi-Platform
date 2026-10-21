@@ -184,16 +184,19 @@ class YtDlpProvider(StreamProvider):
         import time
         from hayate.core.settings import config_dir
         cache = config_dir() / "catalogue_cache.json"
-        if not refresh and cache.is_file():
+        stale = []
+        if cache.is_file():
             try:
                 d = json.loads(cache.read_text())
-                if time.time() - d["t"] < 86400:
-                    return d["titles"]
+                stale = d.get("titles") or []
+                if not refresh and time.time() - d["t"] < 86400:
+                    return stale
             except Exception:
                 pass
         exe = self._find_ytdlp()
         if not exe:
-            return []
+            return stale
+        failed = False
         seen, out = set(), []
         for url in self._channel_urls():
             try:
@@ -202,12 +205,20 @@ class YtDlpProvider(StreamProvider):
                 entries = json.loads(r.stdout).get("entries") or []
             except Exception as e:
                 print(f"[catalogue] {url}: {e}")
+                failed = True
                 continue
             for e in entries:
                 t = re.sub(r"\(.*?\)|\[.*?\]", "", e.get("title") or "")
                 t = re.sub(r"\s+", " ", self._NOISE.sub("", t)).strip(" |·-")
                 if len(t) > 2 and t.lower() not in seen:
                     seen.add(t.lower()); out.append(t)
+        if failed and stale:
+            # offline / a channel failed: keep known titles, don't overwrite the
+            # good cache with a shrunken list, and retry on the next open
+            for t in stale:
+                if t.lower() not in seen:
+                    seen.add(t.lower()); out.append(t)
+            return out
         if out:
             cache.parent.mkdir(parents=True, exist_ok=True)
             cache.write_text(json.dumps({"t": time.time(), "titles": out}))
