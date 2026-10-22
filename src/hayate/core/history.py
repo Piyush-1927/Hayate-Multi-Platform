@@ -127,6 +127,20 @@ class HistoryManager:
             return int(last)
         return self.get_next_episode(anime_id, total_episodes)
 
+    def series_percent(self, h: dict) -> float:
+        """Overall % for a history entry: watched episodes plus the partly
+        watched one, i.e. the point playback will resume from."""
+        last = int(h.get("last_episode") or 0)
+        total = max(int(h.get("total_episodes") or 0), last, 1)
+        watched = set(h.get("watched_episodes") or [])
+        done = len(watched) if watched else max(last - 1, 0)  # old entries lack the list
+        frac = 0.0
+        if last and last not in watched:
+            pr = self.get_progress(h["id"], last)
+            if pr:
+                frac = min(pr[0] / pr[1], 1.0)
+        return max(0.0, min(100.0, (done + frac) / total * 100.0))
+
     def flush(self):
         if getattr(self, "_dirty", False):
             self._dirty = False
