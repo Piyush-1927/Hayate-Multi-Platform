@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hayate-player"
-version = "0.1.6"
+version = "0.2.0"
 description = "Fast, native anime catalog and desktop streaming client"
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
