@@ -128,3 +128,53 @@ def search(con, key, q=""):
         where += " AND title LIKE ?"
         args.append("%" + q + "%")
     return con.execute("SELECT * FROM library WHERE %s ORDER BY updated_at DESC" % where, args).fetchall()
+
+def export_payload(con):
+    return {"version": 1, "library": [dict(r) for r in con.execute("SELECT * FROM library")]}
+
+def parse_backup(data):
+    """Validate a backup dict and return a clean list of rows. Raises ValueError."""
+    if not isinstance(data, dict) or not isinstance(data.get("library"), list):
+        raise ValueError("missing 'library' list")
+    now = time.time()
+    out = []
+    for r in data["library"]:
+        if not isinstance(r, dict) or not isinstance(r.get("anilist_id"), int) or not r.get("title"):
+            raise ValueError("bad entry: %r" % (r,))
+        if r.get("status") not in (None, *STATUSES):
+            raise ValueError("bad status: %r" % (r.get("status"),))
+        out.append({
+            "anilist_id": r["anilist_id"], "title": str(r["title"]),
+            "cover_url": r.get("cover_url"), "total_eps": r.get("total_eps"),
+            "status": r.get("status"), "favorite": int(bool(r.get("favorite", 0))),
+            "added_at": float(r.get("added_at") or now), "updated_at": float(r.get("updated_at") or now),
+        })
+    return out
+
+_INS = "INSERT OR REPLACE INTO library (%s) VALUES (%s)" % (",".join(COLS), ",".join(":" + c for c in COLS))
+
+def merge(con, rows):
+    """Add new entries; overwrite existing ones only if the backup is newer."""
+    added = updated = 0
+    with con:
+        for r in rows:
+            cur = con.execute("SELECT updated_at FROM library WHERE anilist_id=?", (r["anilist_id"],)).fetchone()
+            if cur is None:
+                added += 1
+            elif r["updated_at"] > cur[0]:
+                updated += 1
+            else:
+                continue
+            con.execute(_INS, r)
+    return added, updated
+
+def replace(con, rows):
+    """Replace everything; the old DB is kept as library.db.bak."""
+    bak = sqlite3.connect(str(DB_PATH) + ".bak")
+    try:
+        con.backup(bak)
+    finally:
+        bak.close()
+    with con:
+        con.execute("DELETE FROM library")
+        con.executemany(_INS, rows)

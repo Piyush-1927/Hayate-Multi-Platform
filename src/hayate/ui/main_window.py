@@ -691,6 +691,21 @@ class HeroSpotlightBanner(QWidget):
     prev_requested = pyqtSignal()
     next_requested = pyqtSignal()
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._tap_pos = event.position().toPoint()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        pos = getattr(self, "_tap_pos", None)
+        self._tap_pos = None
+        if (event.button() == Qt.MouseButton.LeftButton and pos is not None
+                and (event.position().toPoint() - pos).manhattanLength() < 8):
+            self.banner_clicked.emit()
+        super().mouseReleaseEvent(event)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(420)

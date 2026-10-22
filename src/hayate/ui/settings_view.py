@@ -424,6 +424,24 @@ class SettingsView(QWidget):
         h_btns.addWidget(import_btn)
         h_btns.addStretch()
         h_layout.addLayout(h_btns)
+
+        _acc = ("QPushButton { background-color: #212130; color: #38bdf8; border: 1.5px solid #38bdf8;"
+                " border-radius: 8px; padding: 0 16px; font-weight: 700; }"
+                "QPushButton:hover { background-color: #38bdf8; color: #090a0f; }")
+        _plain = ("QPushButton { background-color: #212130; color: #e2e8f0; border: 1.5px solid #3d3d52;"
+                  " border-radius: 8px; padding: 0 16px; font-weight: 600; }"
+                  "QPushButton:hover { background-color: #2d2d42; }")
+        h_btns2 = QHBoxLayout()
+        for _txt, _slot, _qss in (("📤 Export Library (JSON)", self._export_library, _acc),
+                                  ("📂 Import Library (JSON)", self._import_library, _plain)):
+            _b = QPushButton(_txt)
+            _b.setFixedHeight(36)
+            _b.setCursor(Qt.CursorShape.PointingHandCursor)
+            _b.setStyleSheet(_qss)
+            _b.clicked.connect(_slot)
+            h_btns2.addWidget(_b)
+        h_btns2.addStretch()
+        h_layout.addLayout(h_btns2)
         layout.addWidget(card_hist)
 
         # Card: Network & Privacy (always shown; the Tor toggle only appears if Tor is available)
@@ -955,6 +973,62 @@ class SettingsView(QWidget):
             return
         QMessageBox.information(self, "Import Complete", msg)
         self.settings_changed.emit()
+
+    def _export_library(self):
+        from hayate import library_db as ldb
+        con = ldb.db()
+        payload = ldb.export_payload(con)
+        if not payload["library"]:
+            QMessageBox.information(self, "Export Notice", "Your library is empty.")
+            return
+        file_dest, _ = dlg_save(
+            self, "Export Library", "hayate_library_backup.json", "JSON Files (*.json)")
+        if not file_dest:
+            return
+        try:
+            Path(file_dest).write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            QMessageBox.information(self, "Export Complete",
+                f"Exported {len(payload['library'])} anime to:\n{file_dest}")
+        except Exception as e:
+            QMessageBox.warning(self, "Export Error", f"Failed to export library: {e}")
+
+    def _import_library(self):
+        from hayate import library_db as ldb
+        file_src, _ = dlg_open(self, "Import Library Backup", "", "JSON Files (*.json)")
+        if not file_src:
+            return
+        try:
+            incoming = ldb.parse_backup(json.loads(Path(file_src).read_text(encoding="utf-8")))
+        except Exception as e:
+            QMessageBox.warning(self, "Invalid Backup", f"This is not a valid Hayate library backup.\n\n{e}")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Import Library")
+        box.setText(f"The backup contains {len(incoming)} anime.")
+        box.setInformativeText(
+            "Merge keeps your current library and adds newer entries from the backup.\n"
+            "Replace overwrites it (a library.db.bak copy of the old data is kept).")
+        merge_btn = box.addButton("Merge", QMessageBox.ButtonRole.AcceptRole)
+        replace_btn = box.addButton("Replace", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(merge_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        con = ldb.db()
+        try:
+            if clicked is merge_btn:
+                added, updated = ldb.merge(con, incoming)
+                msg = f"Merged: {added} added, {updated} updated."
+            elif clicked is replace_btn:
+                ldb.replace(con, incoming)
+                msg = f"Library replaced with {len(incoming)} anime."
+            else:
+                return
+        except Exception as e:
+            QMessageBox.warning(self, "Import Error", f"Failed to import: {e}")
+            return
+        QMessageBox.information(self, "Import Complete", msg)
 
     def _clear_cache(self, *args):
         try:
