@@ -190,6 +190,18 @@ class FloatingControlBar(QtWidgets.QWidget):
         layout.addWidget(self.card)
 
 
+def _skip_safe(fn):
+    import functools, traceback
+
+    @functools.wraps(fn)
+    def w(*a, **k):
+        try:
+            return fn(*a, **k)
+        except Exception:
+            traceback.print_exc()
+    return w
+
+
 class PlayerView(QWidget):
     back_requested = pyqtSignal()
     _stream_resolved = pyqtSignal(object, int, str)
@@ -239,6 +251,7 @@ class PlayerView(QWidget):
         self._initialize_playback()
         self._setup_shortcuts()
         self._connect_signals()
+        self._build_skip_btn()
 
     def _initialize_playback(self):
         """Detect the desktop backend once and initialize embedded libmpv."""
@@ -874,6 +887,8 @@ class PlayerView(QWidget):
         self.title_lbl.setText(f"{self.anime.title}  —  EP {ep}")
         self.progress_bar.setVisible(True)
         self.placeholder_label.setText(f"Loading Episode {ep}...")
+        self._skip_segments, self._skipped, self._skip_kind = {}, set(), None
+        self.skip_btn.hide()
         self.placeholder_label.show()
 
         for idx in range(self.ep_list.count()):
@@ -928,6 +943,7 @@ class PlayerView(QWidget):
         if pr and hasattr(self.media_player, "setStartPosition"):
             self.media_player.setStartPosition(max(0.0, pr[0] - 3.0))
         self._prog_ctx = (anime.id, ep)
+        self._aniskip.request(anime.id, ep)
         self._hook_progress()
         self.media_player.play()
 
@@ -956,6 +972,84 @@ class PlayerView(QWidget):
         if not ctx or ms <= 0 or self.media_player is None:
             return
         history_mgr.set_progress(ctx[0], ctx[1], ms / 1000.0, self.media_player.duration() / 1000.0)
+
+    # ---- AniSkip ---------------------------------------------------------
+    def _build_skip_btn(self):
+        from hayate.core.aniskip import AniSkip
+        from hayate.core.theme import theme
+        self._skip_segments, self._skipped, self._skip_kind = {}, set(), None
+        self._aniskip = AniSkip(self)
+        self._aniskip.ready.connect(self._on_skip_ready)
+        self.skip_btn = QPushButton("Skip Intro", self)
+        self.skip_btn.setFixedHeight(40)
+        self.skip_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.skip_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.skip_btn.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                                     | Qt.WindowType.WindowStaysOnTopHint
+                                     | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.skip_btn.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.skip_btn.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.skip_btn.clicked.connect(self._do_skip)
+        self.skip_btn.hide()
+        self._style_skip_btn()
+        theme.changed.connect(self._style_skip_btn)
+
+    def _style_skip_btn(self, *_):
+        from hayate.core.theme import theme
+        try:
+            fg, edge = theme.rgba("accent"), theme.rgba("accent", 0.7)
+        except Exception:
+            fg, edge = "#38bdf8", "rgba(56,189,248,180)"
+        self.skip_btn.setStyleSheet(
+            "QPushButton { background: rgba(12,12,18,150); color: %s; border: 1.5px solid %s;"
+            " border-radius: 10px; padding: 0 20px; font-size: 13px; font-weight: 800; }"
+            "QPushButton:hover { background: rgba(12,12,18,210); }" % (fg, edge))
+
+    @_skip_safe
+    def _on_skip_ready(self, anilist_id: int, ep: int, seg: dict):
+        if self.anime and anilist_id == self.anime.id and ep == self.active_ep:
+            self._skip_segments = seg
+
+    @_skip_safe
+    def _update_skip_btn(self, pos: int):
+        kind = None
+        for k in ("op", "ed"):
+            seg = self._skip_segments.get(k)
+            if seg and k not in self._skipped and seg[0] <= pos < seg[1] - 1000:
+                kind = k
+                break
+        if kind is None:
+            if self._skip_kind is not None:
+                self._skip_kind = None
+                self.skip_btn.hide()
+            return
+        if kind != self._skip_kind:
+            self._skip_kind = kind
+            self.skip_btn.setText("Skip Intro" if kind == "op" else "Skip Outro")
+            self.skip_btn.adjustSize()
+            self.skip_btn.setFixedHeight(40)
+        vc = self.findChild(VideoOverlayWidget)
+        if vc is not None:
+            br = vc.mapToGlobal(QPoint(vc.width(), vc.height()))
+            lift = 110 if self.window().isFullScreen() else 28
+            self.skip_btn.move(br.x() - self.skip_btn.width() - 32,
+                               br.y() - self.skip_btn.height() - lift)
+        self.skip_btn.show()
+        self.skip_btn.raise_()
+
+    def hideEvent(self, event):
+        if hasattr(self, "skip_btn"):
+            self._skip_kind = None
+            self.skip_btn.hide()
+        super().hideEvent(event)
+
+    def _do_skip(self):
+        seg = self._skip_segments.get(self._skip_kind)
+        if seg and self.media_player is not None:
+            self._skipped.add(self._skip_kind)
+            self.media_player.setPosition(seg[1])
+        self._skip_kind = None
+        self.skip_btn.hide()
 
     def _on_stream_error(self, err_msg: str):
         self.progress_bar.setVisible(False)
@@ -1005,6 +1099,7 @@ class PlayerView(QWidget):
             self.floating_bar.seek_slider.setValue(pos)
         dur = self.media_player.duration()
         self._update_time_label(pos, dur)
+        self._update_skip_btn(pos)
 
     def _on_duration_changed(self, dur: int):
         self.seek_slider_docked.setRange(0, dur)
