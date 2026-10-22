@@ -31,6 +31,12 @@ from hayate.providers import load_providers, provider_label
 from hayate.core.dialogs import dlg_open, dlg_save
 
 
+def _orig_ss(w):
+    from hayate.core.theme import _tracked
+    return _tracked.get(w) or w.styleSheet()
+
+
+
 def _ensure_check_icon() -> str:
     icon_path = cache_dir() / "check.png"
     if not icon_path.exists():
@@ -255,7 +261,7 @@ class SettingsView(QWidget):
         tr_row = QHBoxLayout()
         tr_row.addWidget(QLabel("Style:"))
         self.trans_combo = QComboBox()
-        self.trans_combo.setStyleSheet(self.prov_combo.styleSheet())
+        self.trans_combo.setStyleSheet(_orig_ss(self.prov_combo))
         for label, key in (("Slide (original)", "slide"), ("Wipe (directional)", "wipe"),
                            ("Circle grow", "grow"), ("Circle shrink (outer)", "outer"),
                            ("Circle from center", "center"), ("Fade", "fade")):
@@ -283,7 +289,7 @@ class SettingsView(QWidget):
         pg_row = QHBoxLayout()
         pg_row.addWidget(QLabel("Page transition:"))
         self.page_combo = QComboBox()
-        self.page_combo.setStyleSheet(self.prov_combo.styleSheet())
+        self.page_combo.setStyleSheet(_orig_ss(self.prov_combo))
         for label, key in (("Fade", "fade"), ("Slide", "slide"), ("Zoom", "zoom"), ("None", "none")):
             self.page_combo.addItem(label, key)
         self.page_combo.setCurrentIndex(max(self.page_combo.findData(load_settings().get("page_transition", "fade")), 0))
@@ -350,7 +356,7 @@ class SettingsView(QWidget):
         _cset = load_settings()
         self.cache_check = QCheckBox("Enable cache")
         self.cache_check.setChecked(bool(_cset.get("cache_enabled", True)))
-        self.cache_check.setStyleSheet(self.adult_checkbox.styleSheet())
+        self.cache_check.setStyleSheet(_orig_ss(self.adult_checkbox))
         cc.addWidget(self.cache_check)
         cs_row = QHBoxLayout()
         _cl = QLabel("Cache size:")
@@ -359,7 +365,7 @@ class SettingsView(QWidget):
         self.cache_slider = ClickOnlySlider(25)
         self.cache_slider.setRange(25, 2000)
         self.cache_slider.setValue(int(_cset.get("cache_mb", 300)))
-        self.cache_slider.setStyleSheet(self.blur_slider.styleSheet())
+        self.cache_slider.setStyleSheet(_orig_ss(self.blur_slider))
         self.cache_lbl = QLabel(f"{self.cache_slider.value()} MB")
         self.cache_lbl.setMinimumWidth(72)
         self.cache_lbl.setStyleSheet("color: #38bdf8; font-weight: 700; font-size: 13px; border: none; background: transparent;")
@@ -433,11 +439,11 @@ class SettingsView(QWidget):
         self.net_desc.setStyleSheet("color: #94a3b8; font-size: 12px;")
         n_layout.addWidget(self.net_desc)
         self.dns_check = QCheckBox("Private DNS (DNS-over-HTTPS)")
-        self.dns_check.setStyleSheet(self.adult_checkbox.styleSheet())
+        self.dns_check.setStyleSheet(_orig_ss(self.adult_checkbox))
         self.dns_check.toggled.connect(self._on_dns_toggled)
         n_layout.addWidget(self.dns_check)
         self.proxy_check = QCheckBox("Use custom proxy")
-        self.proxy_check.setStyleSheet(self.adult_checkbox.styleSheet())
+        self.proxy_check.setStyleSheet(_orig_ss(self.adult_checkbox))
         self.proxy_check.toggled.connect(self._on_proxy_toggled)
         n_layout.addWidget(self.proxy_check)
         self.proxy_edit = QLineEdit(self.settings.get("proxy_url", ""))
@@ -445,7 +451,7 @@ class SettingsView(QWidget):
         self.proxy_edit.editingFinished.connect(self._on_proxy_edited)
         n_layout.addWidget(self.proxy_edit)
         self.tor_check = QCheckBox("Route traffic through Tor")
-        self.tor_check.setStyleSheet(self.adult_checkbox.styleSheet())
+        self.tor_check.setStyleSheet(_orig_ss(self.adult_checkbox))
         self.tor_check.toggled.connect(self._on_tor_toggled)
         n_layout.addWidget(self.tor_check)
         self.net_status = QLabel("")

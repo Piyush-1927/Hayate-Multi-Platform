@@ -381,7 +381,8 @@ class PlayerView(QWidget):
         self.quality_combo = QComboBox()
         self.quality_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.quality_combo.setFixedHeight(30)
-        self.quality_combo.setStyleSheet(self.audio_combo.styleSheet())
+        from hayate.core.theme import _tracked as _tr
+        self.quality_combo.setStyleSheet(_tr.get(self.audio_combo) or self.audio_combo.styleSheet())
         for _label, _val in QUALITY_OPTIONS:
             self.quality_combo.addItem(_label, _val)
         _q = self._settings().get("playback_quality", "best")
