@@ -72,3 +72,8 @@ build-dir/
 
 # Local settings layout snapshots
 /src/hayate/ui/*.before-settings-layout-fix-*
+*.flatpak
+repo/
+install.py.before-*
+__pycache__/
+*.bak*

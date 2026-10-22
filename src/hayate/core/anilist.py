@@ -1,4 +1,5 @@
 import urllib.request
+from hayate.core import net
 import urllib.error
 import json
 import time
@@ -59,35 +60,83 @@ class AnimeMedia:
 # Transport
 # --------------------------------------------------------------------------
 
-def _send_query(query: str, variables: Optional[dict] = None, _retried: bool = False) -> dict:
+def _send_query_net(query: str, variables: Optional[dict] = None, _retried: bool = False) -> dict:
     payload = {"query": query, "variables": variables or {}}
     data_bytes = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        ANILIST_API_URL,
-        data=data_bytes,
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "Hayate/0.1",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=12) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        # AniList rate limit: wait the advertised time once, then retry.
-        if e.code == 429 and not _retried:
-            try:
-                wait = min(int(e.headers.get("Retry-After", "5")), 30)
-            except ValueError:
-                wait = 5
-            time.sleep(wait)
-            return _send_query(query, variables, _retried=True)
-        raise
+    with net.client(timeout=12) as _c:
+        resp = _c.post(
+            ANILIST_API_URL,
+            content=data_bytes,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "Hayate/0.1",
+            },
+        )
+    # AniList rate limit: wait the advertised time once, then retry.
+    if resp.status_code == 429 and not _retried:
+        try:
+            wait = min(int(resp.headers.get("Retry-After", "5")), 30)
+        except ValueError:
+            wait = 5
+        time.sleep(wait)
+        return _send_query_net(query, variables, _retried=True)
+    resp.raise_for_status()
+    result = resp.json()
 
     if result.get("errors") and not result.get("data"):
         msg = "; ".join(str(err.get("message", err)) for err in result["errors"])
         raise RuntimeError(f"AniList error: {msg}")
+    return result
+
+
+API_CACHE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _api_cache_file(query: str, variables: Optional[dict]):
+    import hashlib
+    key = hashlib.sha1(
+        (query + json.dumps(variables or {}, sort_keys=True)).encode("utf-8")
+    ).hexdigest()
+    d = cache_dir() / "api"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{key}.json"
+
+
+def _api_cache_prune(d):
+    try:
+        files = sorted(d.glob("*.json"), key=lambda f: f.stat().st_mtime)
+        total = sum(f.stat().st_size for f in files)
+        while files and total > API_CACHE_MAX_BYTES:
+            f = files.pop(0)
+            total -= f.stat().st_size
+            f.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _send_query(query: str, variables: Optional[dict] = None, _retried: bool = False) -> dict:
+    """Network call with an on-disk fallback: any failure (offline, 403 outage,
+    timeout) serves the last good response for the same query."""
+    try:
+        path = _api_cache_file(query, variables)
+    except Exception:
+        path = None
+    try:
+        result = _send_query_net(query, variables, _retried)
+    except Exception:
+        if path is not None:
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))["result"]
+            except Exception:
+                pass
+        raise
+    if path is not None:
+        try:
+            path.write_text(json.dumps({"fetched_at": time.time(), "result": result}), encoding="utf-8")
+            _api_cache_prune(path.parent)
+        except Exception:
+            pass
     return result
 
 
@@ -273,6 +322,23 @@ def search_anime_sync(query: str, page: int = 1, per_page: int = 35,
     return kept, len(kept) != len(everything)
 
 
+def search_many_sync(titles: List[str], allow_adult: Optional[bool] = None) -> List[Optional[AnimeMedia]]:
+    """One AniList request for several titles: best match (or None) per title, same order."""
+    allow = _resolve_adult(allow_adult)
+    decl = ", ".join(f"$q{i}: String" for i in range(len(titles)))
+    body = "\n".join(
+        f"  a{i}: Page(page: 1, perPage: 1) {{ media(search: $q{i}, type: ANIME, "
+        f"sort: [SEARCH_MATCH, POPULARITY_DESC]) {{ {MEDIA_FIELDS} }} }}" for i in range(len(titles)))
+    res = _send_query(f"query ({decl}) {{\n{body}\n}}", {f"q{i}": t for i, t in enumerate(titles)})
+    data = res.get("data") or {}
+    out = []
+    for i in range(len(titles)):
+        nodes = (data.get(f"a{i}") or {}).get("media") or []
+        m = _parse_media_node(nodes[0]) if nodes else None
+        out.append(None if (m is not None and m.is_adult and not allow) else m)
+    return out
+
+
 def get_anime_by_id_sync(anime_id: int) -> Optional[AnimeMedia]:
     res_json = _send_query(ANIME_BY_ID_QUERY, {"id": anime_id})
     media = (res_json.get("data") or {}).get("Media")
@@ -385,7 +451,17 @@ def get_home_shelves_sync(allow_adult: Optional[bool] = None, use_cache: bool = 
             pass
 
     month_ago = _fuzzy_int(date.today() - timedelta(days=30))
-    res_json = _send_query(_home_query(allow), {"monthAgo": month_ago})
+    try:
+        res_json = _send_query(_home_query(allow), {"monthAgo": month_ago})
+    except Exception:
+        # offline / API down: serve the last good cache, however old
+        try:
+            blob = json.loads(path.read_text(encoding="utf-8"))
+            if blob.get("allow_adult") == allow and blob.get("data"):
+                return build_shelves(blob["data"], allow)
+        except Exception:
+            pass
+        raise
     data = res_json.get("data") or {}
     try:
         path.write_text(json.dumps({

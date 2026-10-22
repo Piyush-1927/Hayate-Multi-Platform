@@ -17,7 +17,7 @@ MIDNIGHT = dict(
     app_background="#171722", card_background="#1e1e2d", card_border="#2f2f44",
     card_border_width=1.5, ui_border="#3d3d52", text_primary="#ffffff",
     text_secondary="#94a3b8", accent="#38bdf8", button_background="#212130",
-    button_text="#e2e8f0", hover="#2d2d42", selected="#26263b")
+    button_text="#e2e8f0", hover="#2d2d42", selected="#26263b", danger="#f87171")
 PRESETS = {
     "Midnight": MIDNIGHT,
     "Forest": {**MIDNIGHT, "app_background": "#101412", "card_background": "#1a201c",
@@ -38,9 +38,17 @@ QLabel { color:$text_primary; }
 QFrame[card="true"] { background:$card_background; border:${card_border_width}px solid $card_border; border-radius:12px; }
 QPushButton { background:$button_background; color:$button_text; border:1px solid $ui_border; border-radius:8px; padding:6px 12px; }
 QPushButton:hover { background:$hover; }
+QScrollBar:vertical { background:transparent; width:12px; margin:0; }
+QScrollBar:horizontal { background:transparent; height:12px; margin:0; }
+QScrollBar::handle:vertical { background:$ui_border; border-radius:5px; min-height:30px; margin:2px; }
+QScrollBar::handle:horizontal { background:$ui_border; border-radius:5px; min-width:30px; margin:2px; }
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background:$accent; }
+QScrollBar::add-line, QScrollBar::sub-line { width:0; height:0; }
+QScrollBar::add-page, QScrollBar::sub-page { background:transparent; }
 QPushButton:checked { background:$selected; border-color:$accent; }
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background:$card_background; color:$text_primary; border:1px solid $ui_border; border-radius:6px; padding:4px 8px; }
 QComboBox QAbstractItemView { background:$card_background; color:$text_primary; selection-background-color:$selected; }
+QPushButton[accent="true"] { background:$accent; color:$text_on_accent; border:none; font-weight:700; }
 QSlider::groove:horizontal { height:4px; background:$ui_border; border-radius:2px; }
 QSlider::sub-page:horizontal { background:$accent; border-radius:2px; }
 QSlider::handle:horizontal { background:$accent; width:14px; margin:-5px 0; border-radius:7px; }
@@ -91,7 +99,20 @@ class ThemeManager(QObject):
     def tokens(self):
         return self.draft or PRESETS.get(self.active) or self.library.get(self.active) or MIDNIGHT
 
-    def qss(self): return QSS.substitute(self.tokens())
+    def qss(self): return QSS.substitute(self.derived())
+
+    def is_light(self): return _lum(self.tokens()["app_background"]) > .5
+
+    def derived(self):  # tokens + computed colours (never saved)
+        t = self.tokens(); a = t["accent"]
+        on = "#090a0f" if contrast("#090a0f", a) >= contrast("#ffffff", a) else "#ffffff"
+        return {**t, "text_on_accent": on}
+
+    def c(self, role, a=1.0):  # QColor for paintEvent
+        q = QColor(self.derived()[role]); q.setAlphaF(a); return q
+
+    def rgba(self, role, a=1.0):  # for QSS strings
+        q = self.c(role, a); return f"rgba({q.red()},{q.green()},{q.blue()},{q.alpha()})"
 
     def _save(self):
         PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -143,6 +164,9 @@ SW = {"card_background": ["#1e1e2d", "#262638", "#141b2d", "#1f2a24", "#ffffff"]
       "accent": ["#38bdf8", "#a78bfa", "#34d399", "#fb923c", "#f472b6"]}
 TITLES = {"card_background": "Card background", "card_border": "Card border colour",
           "accent": "Accent colour"}
+for _k in MIDNIGHT:
+    if _k not in TITLES and _k != "card_border_width":
+        TITLES[_k] = _k.replace("_", " ").capitalize(); SW[_k] = []
 
 
 def _raw(w, q):  # bypass the legacy-colour rewriter
@@ -153,7 +177,7 @@ class ThemeSettingsCard(QFrame):
     def __init__(self):
         super().__init__()
         self.setProperty("card", True)
-        self._tiles, self._sws = {}, []
+        self._tiles, self._sws, self._pk = {}, [], {}
         lay = QVBoxLayout(self); lay.setSpacing(10)
         lay.addWidget(QLabel("<b>Colour scheme</b>"))
         pv = QFrame(); pv.setProperty("card", True)
@@ -179,6 +203,13 @@ class ThemeSettingsCard(QFrame):
         e = QHBoxLayout(); e.addWidget(QLabel("None")); e.addStretch(); e.addWidget(QLabel("Thick"))
         lay.addLayout(e)
         self._row(lay, "accent")
+        lay.addWidget(QLabel("<b>All colours</b>"))
+        ag = QGridLayout(); ag.setHorizontalSpacing(16); ag.setColumnStretch(0, 1); ag.setColumnStretch(2, 1)
+        for i, k in enumerate(x for x in TITLES if x not in ("card_background", "card_border", "accent")):
+            b = QPushButton(); b.setFixedSize(46, HEIGHTS["sm"]); b.clicked.connect(lambda _, k=k: self._pick(k))
+            self._pk[k] = b
+            ag.addWidget(QLabel(TITLES[k]), i // 2, i % 2 * 2); ag.addWidget(b, i // 2, i % 2 * 2 + 1)
+        lay.addLayout(ag)
         r = QHBoxLayout()
         for text, fn in (("Save as…", self._save), ("Import", self._import), ("Export", self._export)):
             b = QPushButton(text); b.clicked.connect(fn); r.addWidget(b)
@@ -213,7 +244,7 @@ class ThemeSettingsCard(QFrame):
         r.addWidget(p); r.addStretch(); lay.addLayout(r)
 
     def _sync(self):
-        t = theme.tokens(); cur = None if theme.draft else theme.active
+        t = theme.derived(); cur = None if theme.draft else theme.active
         for n, b in self._tiles.items():
             b.setChecked(n == cur)
             _raw(b, f"QPushButton{{background:{t['card_background']};border:2px solid "
@@ -221,14 +252,16 @@ class ThemeSettingsCard(QFrame):
         for b, k, c in self._sws:
             _raw(b, f"QPushButton{{background:{c};border:2px solid "
                     f"{t['text_primary'] if t[k] == c else 'transparent'};border-radius:6px;}}")
-        _raw(self.ex, f"QPushButton{{background:{t['accent']};color:{legacy('#090a0f')};"
+        _raw(self.ex, f"QPushButton{{background:{t['accent']};color:{t['text_on_accent']};"
                       "border:none;border-radius:8px;padding:6px;font-weight:700;}")
         for cap, n in getattr(self, "_caps", []):
             on = n == cur
             _raw(cap, f"QFrame{{background:{t['card_background']};border:2px solid "
                       f"{t['accent'] if on else t['ui_border']};border-radius:14px;}}")
             _raw(cap._nb, f"QPushButton{{background:transparent;border:none;color:{t['text_primary']};text-align:left;padding:4px 0;min-width:0;}}")
-            _raw(cap._xb, f"QPushButton{{background:transparent;border:none;border-radius:11px;color:{t['text_secondary']};font-size:16px;font-weight:700;padding:0;min-width:22px;max-width:22px;min-height:22px;max-height:22px;}}QPushButton:hover{{background:#f87171;color:#ffffff;}}")
+            _raw(cap._xb, f"QPushButton{{background:transparent;border:none;border-radius:11px;color:{t['text_secondary']};font-size:16px;font-weight:700;padding:0;min-width:22px;max-width:22px;min-height:22px;max-height:22px;}}QPushButton:hover{{background:{t['danger']};color:{t['text_on_accent']};}}")
+        for k, p in self._pk.items():
+            _raw(p, f"QPushButton{{background:{t[k]};border:2px solid {t['ui_border']};border-radius:6px;}}")
         self.sl.blockSignals(True); self.sl.setValue(round(t["card_border_width"])); self.sl.blockSignals(False)
         self.wl.setText(f"{t['card_border_width']:g}px")
 
@@ -292,7 +325,9 @@ _LEGACY = {h: r for r, hs in {
     "accent": "#38bdf8 #7dd3fc #0284c7",
 }.items() for h in hs.split()}
 _HEX = re.compile(r"#[0-9a-fA-F]{6}\b")
+_RGBA = re.compile(r"rgba\(\s*255,\s*255,\s*255,\s*([\d.]+)\s*\)")
 _W = re.compile(r"1\.5px(\s+solid\s+#2f2f44)", re.I)
+_GLASS = re.compile(r"@glass\(([\d.]+)\)")
 _tracked = weakref.WeakKeyDictionary()
 _orig_set = QWidget.setStyleSheet
 
@@ -310,15 +345,31 @@ def legacy(h):
 
 
 def rewrite(q):
-    if "#" not in q:
+    if "@glass" in q:  # translucent surface that sits on artwork
+        lt = theme.is_light(); g = "app_background" if lt else "text_primary"
+        q = _GLASS.sub(lambda m: theme.rgba(g, min(1.0, float(m.group(1)) * (3.5 if lt else 1))), q)
+        return q.replace("@glassfg", theme.tokens()["text_primary"])
+    if "/*raw*/" in q or ("#" not in q and "rgba" not in q):
         return q
     q = _W.sub(lambda m: f"{theme.tokens()['card_border_width']}px{m.group(1)}", q)
+    q = _RGBA.sub(lambda m: theme.rgba("text_primary", float(m.group(1))), q)
     return _HEX.sub(lambda m: legacy(m.group(0)), q)
+
+
+def _fix_bg(w, q):
+    try:
+        if "background" not in q: return
+        if type(w) is QWidget:
+            w.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        elif isinstance(w, QScrollArea):
+            w.viewport().setAutoFillBackground(False)
+    except RuntimeError: pass
 
 
 def _set(self, q):
     _tracked[self] = q
     _orig_set(self, rewrite(q))
+    _fix_bg(self, q)
 
 
 QWidget.setStyleSheet = _set
@@ -326,10 +377,47 @@ QWidget.setStyleSheet = _set
 
 def _refresh():
     for w, q in list(_tracked.items()):
-        try: _orig_set(w, rewrite(q))
+        try: _orig_set(w, rewrite(q)); _fix_bg(w, q)
         except RuntimeError: pass
     for w in QApplication.allWidgets():
-        w.update()
+        try:
+            st = w.style(); st.unpolish(w); st.polish(w); w.update()
+        except RuntimeError: pass
 
 
-theme.changed.connect(_refresh)
+def _debug_untracked():
+    import os
+    if not os.environ.get("HAYATE_THEME_DEBUG"): return
+    for w in QApplication.allWidgets():
+        try: ss = w.styleSheet()
+        except RuntimeError: continue
+        if ss and w not in _tracked:
+            print("UNTRACKED", type(w).__name__, w.objectName(), repr(ss[:70]))
+
+
+def _refresh_later():
+    from PyQt6.QtCore import QTimer
+    QTimer.singleShot(0, _refresh)
+    QTimer.singleShot(50, _debug_untracked)
+
+
+theme.changed.connect(_refresh_later)
+
+
+from PyQt6.QtWidgets import QDialog, QScrollArea
+
+
+class AppearanceLauncherCard(QFrame):  # compact card shown in Settings
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.setProperty("card", True)
+        h = QHBoxLayout(self); self.lbl = QLabel(); h.addWidget(self.lbl, 1)
+        b = QPushButton("Open Appearance…"); b.clicked.connect(self._open); h.addWidget(b)
+        theme.changed.connect(self._sync); self._sync()
+
+    def _sync(self):
+        self.lbl.setText(f"<b>Appearance</b><br>Theme: {theme.active}" + (" (unsaved changes)" if theme.draft else ""))
+
+    def _open(self):
+        w = self.window()
+        if hasattr(w, "open_appearance_view"): w.open_appearance_view()

@@ -38,6 +38,8 @@ def clean_html(text: str) -> str:
     text = re.sub(r'<[^>]+>', '', text)
     return " ".join(text.split()).strip()
 
+from hayate.core.theme import theme
+
 _SPOTLIGHT_PIX_CACHE: dict[int, QPixmap] = {}
 _ANIME_META_CACHE: dict[int, AnimeMedia] = {}
 
@@ -120,7 +122,7 @@ class HamburgerButton(QPushButton):
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#f1f5f9"), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        pen = QPen(theme.c("text_primary"), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         cx = self.width() // 2
         cy = self.height() // 2
@@ -146,7 +148,7 @@ class ElidedParagraphLabel(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QColor("#cbd5e1"))
+        painter.setPen(theme.c("text_primary", 0.85))
         font = self.font()
         font.setPointSize(10)
         font.setWeight(400)
@@ -195,7 +197,7 @@ class ElidedTitleLabel(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QColor("#f1f5f9"))
+        painter.setPen(theme.c("text_primary"))
         font = self.font()
         font.setPointSize(10)
         font.setBold(True)
@@ -229,6 +231,9 @@ class ElidedTitleLabel(QWidget):
 class NavigationMenuPopup(QFrame):
     """Floating menu anchored to the hamburger button."""
     schedule_clicked = pyqtSignal()
+    catalogue_clicked = pyqtSignal()
+    history_clicked = pyqtSignal()
+    library_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -271,6 +276,12 @@ class NavigationMenuPopup(QFrame):
         btn_sched.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_sched.clicked.connect(self._on_sched)
         l.addWidget(btn_sched)
+        for text, sig in (("📚  Catalogue", self.catalogue_clicked),
+                          ("🕘  Watch History", self.history_clicked),
+                          ("🔖  Library", self.library_clicked)):
+            b = QPushButton(text); b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _, s=sig: (self.hide(), s.emit()))
+            l.addWidget(b)
 
     def _on_sched(self):
         self.hide()
@@ -378,7 +389,7 @@ class HoverPreviewPopup(QFrame):
             self.play_btn.setVisible(True)
             watched = history_mgr.get_watched_episodes(anime.id)
             if watched:
-                next_ep = history_mgr.get_next_episode(anime.id, total)
+                next_ep = history_mgr.get_resume_episode(anime.id, total)
                 self.target_ep = next_ep
                 self.badge_lbl.setText(f"CONTINUE WATCHING • EP {next_ep}")
                 self.play_btn.setText(f"▶ Play EP {next_ep}")
@@ -401,14 +412,29 @@ class HoverPreviewPopup(QFrame):
 
     def track_card(self, card_widget: QWidget):
         self.active_card = card_widget
+        self._inactive_ticks = 0
         self.watch_timer.start()
 
     def _check_cursor_bounds(self):
+        aw = QApplication.activeWindow()
+        if aw is None or aw.isMinimized():
+            self._inactive_ticks = getattr(self, '_inactive_ticks', 0) + 1
+            if self._inactive_ticks >= 2:
+                self.watch_timer.stop()
+                self.active_card = None
+                self.hide()
+                return
+        else:
+            self._inactive_ticks = 0
         c_pos = QCursor.pos()
         if self.geometry().adjusted(-4, -4, 4, 4).contains(c_pos):
             return
 
-        if self.active_card and self.active_card.isVisible():
+        try:
+            _vis = bool(self.active_card and self.active_card.isVisible())
+        except RuntimeError:  # card was deleted (catalogue row scrolled away)
+            _vis = False
+        if _vis:
             card_origin = self.active_card.mapToGlobal(QPoint(0, 0))
             card_rect = QRectF(
                 float(card_origin.x()),
@@ -452,15 +478,15 @@ class HoverPreviewPopup(QFrame):
             scaled = _fit_pixmap(self, self.bg_pixmap)
             painter.drawPixmap(0, 0, scaled)
             grad = QLinearGradient(0, 0, 0, self.height())
-            grad.setColorAt(0.0, QColor(18, 18, 26, 220))
-            grad.setColorAt(0.4, QColor(18, 18, 26, 245))
-            grad.setColorAt(1.0, QColor(18, 18, 26, 255))
+            grad.setColorAt(0.0, theme.c("app_background", 0.86))
+            grad.setColorAt(0.4, theme.c("app_background", 0.96))
+            grad.setColorAt(1.0, theme.c("app_background"))
             painter.fillRect(self.rect(), QBrush(grad))
         else:
-            painter.fillRect(self.rect(), QColor(22, 22, 32))
+            painter.fillRect(self.rect(), theme.c("app_background"))
 
         painter.setClipping(False)
-        painter.setPen(QPen(QColor(56, 189, 248, 140), 1.5))
+        painter.setPen(QPen(theme.c("accent", 0.55), 1.5))
         painter.drawRoundedRect(rect, 14, 14)
 
 
@@ -543,7 +569,7 @@ class _PageOverlay(QWidget):
     def setup(self, snap, style, forward, k):
         bg = _QPM(snap.size())
         bg.setDevicePixelRatio(snap.devicePixelRatio())
-        bg.fill(QColor(_APP_BG))
+        bg.fill(theme.c("app_background"))
         pp = _QPT(bg)
         pp.drawPixmap(0, 0, snap)
         pp.end()
@@ -576,7 +602,7 @@ class AnimatedStack(QStackedWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         pal = self.palette()
-        pal.setColor(_PAL.ColorRole.Window, QColor(_APP_BG))
+        pal.setColor(_PAL.ColorRole.Window, theme.c("app_background"))
         self.setPalette(pal)
         self.setAutoFillBackground(True)
         self._ov = _PageOverlay(self)
@@ -665,6 +691,21 @@ class HeroSpotlightBanner(QWidget):
     prev_requested = pyqtSignal()
     next_requested = pyqtSignal()
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._tap_pos = event.position().toPoint()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        pos = getattr(self, "_tap_pos", None)
+        self._tap_pos = None
+        if (event.button() == Qt.MouseButton.LeftButton and pos is not None
+                and (event.position().toPoint() - pos).manhattanLength() < 8):
+            self.banner_clicked.emit()
+        super().mouseReleaseEvent(event)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(420)
@@ -746,14 +787,14 @@ class HeroSpotlightBanner(QWidget):
         nav_arrows.setSpacing(12)
         arrow_style = """
             QPushButton {
-                background-color: rgba(255, 255, 255, 0.12);
-                color: #ffffff;
+                background-color: @glass(0.12);
+                color: @glassfg;
                 font-size: 18px;
                 font-weight: bold;
                 border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 0.2);
+                border: 1px solid @glass(0.2);
             }
-            QPushButton:hover { background-color: rgba(255, 255, 255, 0.22); }
+            QPushButton:hover { background-color: @glass(0.22); }
         """
         self.prev_btn = QPushButton("<")
         self.prev_btn.setFixedSize(42, 42)
@@ -882,16 +923,16 @@ class HeroSpotlightBanner(QWidget):
             x_offset = max(0, round(scaled.width() / scaled.devicePixelRatio()) - self.width())
             painter.drawPixmap(-x_offset // 2, 0, scaled)
             grad = QLinearGradient(0, 0, self.width(), 0)
-            grad.setColorAt(0.0, QColor(20, 20, 30, 255))
-            grad.setColorAt(0.48, QColor(20, 20, 30, 230))
-            grad.setColorAt(0.78, QColor(20, 20, 30, 110))
-            grad.setColorAt(1.0, QColor(20, 20, 30, 50))
+            grad.setColorAt(0.0, theme.c("app_background"))
+            grad.setColorAt(0.48, theme.c("app_background", 0.9))
+            grad.setColorAt(0.62 if theme.is_light() else 0.78, theme.c("app_background", 0.15 if theme.is_light() else 0.43))
+            grad.setColorAt(1.0, theme.c("app_background", 0.0 if theme.is_light() else 0.2))
             painter.fillRect(self.rect(), QBrush(grad))
         else:
-            painter.fillRect(self.rect(), QColor(26, 26, 38))
+            painter.fillRect(self.rect(), theme.c("card_background"))
 
         painter.setClipping(False)
-        painter.setPen(QPen(QColor(255, 255, 255, 20), 1.0))
+        painter.setPen(QPen(theme.c("text_primary", 0.08), 1.0))
         painter.drawRoundedRect(rect, 16, 16)
 
 
@@ -942,8 +983,8 @@ class PosterImageWidget(QWidget):
             y = (self.height() - round(scaled.height() / _d)) // 2
             painter.drawPixmap(x, y, scaled)
         else:
-            painter.fillRect(self.rect(), QColor(28, 28, 42))
-            painter.setPen(QColor(80, 80, 110))
+            painter.fillRect(self.rect(), theme.c("card_background"))
+            painter.setPen(theme.c("text_secondary", 0.6))
             font = self.font()
             font.setPointSize(28)
             painter.setFont(font)
@@ -952,7 +993,7 @@ class PosterImageWidget(QWidget):
             font.setPointSize(9)
             font.setBold(True)
             painter.setFont(font)
-            painter.setPen(QColor(148, 163, 184))
+            painter.setPen(theme.c("text_secondary"))
             text_rect = QRectF(12, 120, self.width() - 24, 100)
             painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.fallback_title)
 
@@ -961,18 +1002,20 @@ class PosterImageWidget(QWidget):
             y_bar = self.height() - bar_height
             painter.fillRect(QRectF(0, y_bar, self.width(), bar_height), QColor(0, 0, 0, 180))
             fill_width = (self.width() * self.progress_percent) / 100.0
-            painter.fillRect(QRectF(0, y_bar, fill_width, bar_height), QColor("#38bdf8"))
+            painter.fillRect(QRectF(0, y_bar, fill_width, bar_height), theme.c("accent"))
 
         painter.setClipping(False)
-        painter.setPen(QPen(QColor(60, 60, 85, 140), 1.2))
+        painter.setPen(QPen(theme.c("ui_border", 0.55), 1.2))
         painter.drawRoundedRect(rect, 12, 12)
 
 
 class PosterCard(QWidget):
     clicked = pyqtSignal(AnimeMedia)
     hovered = pyqtSignal(AnimeMedia, QPoint, QWidget)
+    remove_requested = pyqtSignal(AnimeMedia)
 
-    def __init__(self, anime: AnimeMedia, progress_percent: float = 0.0, priority: int = 10, parent=None):
+    def __init__(self, anime: AnimeMedia, progress_percent: float = 0.0, priority: int = 10,
+                 parent=None, removable: bool = False, remove_tip: str = "Remove from history"):
         super().__init__(parent)
         self.anime = anime
         self.setFixedSize(185, 305)
@@ -1003,8 +1046,34 @@ class PosterCard(QWidget):
         if getattr(anime, "cover_url", None):
             image_mgr.load(anime.cover_url, self.poster_widget.set_pixmap, priority=priority)
 
+        # Hover-revealed remove button (only for cards that ask for it, e.g. history)
+        self.remove_btn = None
+        if removable:
+            self.remove_btn = QPushButton("✕", self)
+            self.remove_btn.setFixedSize(28, 28)
+            self.remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.remove_btn.setToolTip(remove_tip)
+            self.remove_btn.move(185 - 28 - 8, 8)
+            self.remove_btn.clicked.connect(lambda: self.remove_requested.emit(self.anime))
+            self.remove_btn.hide()
+            self._style_remove_btn()
+            theme.changed.connect(self._style_remove_btn)
+
+    def _style_remove_btn(self):
+        b = self.remove_btn
+        if b is None:
+            return
+        b.setStyleSheet(
+            "QPushButton { background: rgba(0,0,0,170); color: %s; border: 1.5px solid %s;"
+            " border-radius: 14px; font-size: 13px; font-weight: 800; padding: 0; }"
+            "QPushButton:hover { background: %s; color: white; }"
+            % (theme.rgba("danger"), theme.rgba("danger", 0.6), theme.rgba("danger")))
+
     def enterEvent(self, event):
         self._hover_timer.start()
+        if self.remove_btn is not None:
+            self.remove_btn.show()
+            self.remove_btn.raise_()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
@@ -1013,6 +1082,8 @@ class PosterCard(QWidget):
         local_c = self.mapFromGlobal(QCursor.pos())
         if not card_rect.contains(QPointF(local_c)):
             self._hover_timer.stop()
+            if self.remove_btn is not None:
+                self.remove_btn.hide()
         super().leaveEvent(event)
 
     def _trigger_hover_preview(self):
@@ -1080,9 +1151,13 @@ class DraggableScrollArea(QScrollArea):
 class AnimeShelfWidget(QFrame):
     card_clicked = pyqtSignal(AnimeMedia)
     card_hovered = pyqtSignal(AnimeMedia, QPoint, QWidget)
+    card_remove_requested = pyqtSignal(AnimeMedia)
+    view_all_requested = pyqtSignal()
 
-    def __init__(self, title: str, title_color: str = "#ffffff", parent=None):
+    def __init__(self, title: str, title_color: str = "#ffffff", parent=None,
+                 removable: bool = False, view_all: bool = False):
         super().__init__(parent)
+        self.removable = removable
         self.setObjectName("shelf_frame")
         self.setStyleSheet("""
             QFrame#shelf_frame {
@@ -1097,7 +1172,18 @@ class AnimeShelfWidget(QFrame):
 
         self.title_lbl = QLabel(title)
         self.title_lbl.setStyleSheet(f"font-size: 19px; font-weight: 800; color: {title_color}; background: transparent; border: none;")
-        layout.addWidget(self.title_lbl)
+        head = QHBoxLayout()
+        head.addWidget(self.title_lbl)
+        head.addStretch()
+        self.view_all_btn = None
+        if view_all:
+            self.view_all_btn = QPushButton("View all ›")
+            self.view_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.view_all_btn.clicked.connect(self.view_all_requested.emit)
+            self._style_view_all()
+            theme.changed.connect(self._style_view_all)
+            head.addWidget(self.view_all_btn)
+        layout.addLayout(head)
 
         self.scroll = DraggableScrollArea()
         self.scroll.setFixedHeight(315)
@@ -1115,6 +1201,13 @@ class AnimeShelfWidget(QFrame):
 
         layout.addWidget(self.scroll)
 
+    def _style_view_all(self):
+        if self.view_all_btn is not None:
+            self.view_all_btn.setStyleSheet(
+                "QPushButton { background: transparent; border: none; padding: 4px 8px;"
+                " font-weight: 700; color: %s; } QPushButton:hover { color: %s; }"
+                % (theme.rgba("accent"), theme.rgba("text_primary")))
+
     def set_items(self, anime_list: list[tuple[AnimeMedia, float]] | list[AnimeMedia], base_priority: int = 100):
         while self.inner_layout.count():
             item = self.inner_layout.takeAt(0)
@@ -1128,8 +1221,9 @@ class AnimeShelfWidget(QFrame):
                 anime, progress = item, 0.0
 
             priority = base_priority if idx < 10 else 10
-            card = PosterCard(anime, progress_percent=progress, priority=priority)
+            card = PosterCard(anime, progress_percent=progress, priority=priority, removable=self.removable)
             card.clicked.connect(self.card_clicked.emit)
+            card.remove_requested.connect(self.card_remove_requested.emit)
             card.hovered.connect(self.card_hovered.emit)
             self.inner_layout.addWidget(card)
 
@@ -1202,6 +1296,9 @@ class MainWindow(QMainWindow):
 
         self.nav_popup = NavigationMenuPopup(self)
         self.nav_popup.schedule_clicked.connect(self.open_schedule_view)
+        self.nav_popup.catalogue_clicked.connect(self.open_catalogue_view)
+        self.nav_popup.history_clicked.connect(self.open_history_view)
+        self.nav_popup.library_clicked.connect(self.open_library_view)
 
         self.menu_btn = HamburgerButton()
         self.menu_btn.clicked.connect(self.toggle_nav_popup)
@@ -1291,8 +1388,10 @@ class MainWindow(QMainWindow):
         self.root_layout.addSpacing(32)
 
         # 2. Continue Watching Shelf
-        self.history_shelf = AnimeShelfWidget("Continue Watching", title_color="#38bdf8")
+        self.history_shelf = AnimeShelfWidget("Continue Watching", title_color="#38bdf8", removable=True, view_all=True)
         self._connect_shelf(self.history_shelf)
+        self.history_shelf.card_remove_requested.connect(self._remove_history_item)
+        self.history_shelf.view_all_requested.connect(self.open_history_view)
         self.root_layout.addWidget(self.history_shelf)
         self.history_spacer = QWidget()
         self.history_spacer.setFixedHeight(32)
@@ -1329,7 +1428,7 @@ class MainWindow(QMainWindow):
 
         # Details View
         self.details_view = DetailsView(self.player)
-        self.details_view.back_requested.connect(self.on_back_to_home)
+        self.details_view.back_requested.connect(self._back_from_details)
         self.details_view.relation_selected.connect(self.open_by_id)
         self.details_view.play_requested.connect(self.open_player_view)
         self.stack.addWidget(self.details_view)
@@ -1352,6 +1451,32 @@ class MainWindow(QMainWindow):
         self.settings_view.settings_changed.connect(self.load_home)
         self.stack.addWidget(self.settings_view)
 
+        from hayate.ui.appearance_view import AppearanceView
+        from hayate.ui.catalogue_view import CatalogueView
+        self.appearance_view = AppearanceView()
+        self.appearance_view.back_requested.connect(self.open_settings_view)
+        self.stack.addWidget(self.appearance_view)
+        self.catalogue_view = CatalogueView()
+        self.catalogue_view.back_requested.connect(self.on_back_to_home)
+        self.catalogue_view.card_clicked.connect(self.open_details_view)
+        self.catalogue_view.card_hovered.connect(self._show_hover_preview)
+        self.catalogue_view.scrolled.connect(self.hover_preview.hide)
+        self.stack.addWidget(self.catalogue_view)
+        from hayate.ui.history_view import HistoryView
+        self.history_view = HistoryView()
+        self.history_view.back_requested.connect(self.on_back_to_home)
+        self.history_view.card_clicked.connect(self.open_details_view)
+        self.history_view.card_hovered.connect(self._show_hover_preview)
+        self.history_view.scrolled.connect(self.hover_preview.hide)
+        self.stack.addWidget(self.history_view)
+        from hayate.ui.library_view import LibraryView
+        self.library_view = LibraryView()
+        self.library_view.back_requested.connect(self.on_back_to_home)
+        self.library_view.card_clicked.connect(self.open_details_view)
+        self.library_view.card_hovered.connect(self._show_hover_preview)
+        self.library_view.scrolled.connect(self.hover_preview.hide)
+        self.stack.addWidget(self.library_view)
+
         # Search View (Page 4)
         self.search_view = SearchView(poster_card_cls=PosterCard)
         self.search_view.back_requested.connect(self.on_back_to_home)
@@ -1362,7 +1487,7 @@ class MainWindow(QMainWindow):
 
         # Upcoming (unreleased) titles get their own description page
         self.upcoming_view = UpcomingDetailsView()
-        self.upcoming_view.back_requested.connect(self.on_back_to_home)
+        self.upcoming_view.back_requested.connect(self._back_from_details)
         self.upcoming_view.relation_selected.connect(self.open_by_id)
         self.stack.addWidget(self.upcoming_view)
 
@@ -1380,7 +1505,7 @@ class MainWindow(QMainWindow):
         shelf.card_hovered.connect(self._show_hover_preview)
 
     def _show_hover_preview(self, anime: AnimeMedia, global_pos: QPoint, card_widget: QWidget):
-        if self.stack.currentIndex() != 0:
+        if self.stack.currentIndex() != 0 and self.stack.currentWidget() not in (self.catalogue_view, self.history_view, self.library_view):
             return
         self.hover_preview.set_anime(anime)
 
@@ -1455,6 +1580,41 @@ class MainWindow(QMainWindow):
         self.schedule_view.load_schedule()
         self.stack.setCurrentWidget(self.schedule_view)
 
+    def open_appearance_view(self): self._open_page(self.appearance_view)
+
+    def open_catalogue_view(self):
+        self.catalogue_view.load()
+        self._open_page(self.catalogue_view)
+
+    def _back_from_details(self):
+        if getattr(self, "_details_origin", None) is self.library_view:
+            self.progress.setVisible(False)
+            self.hover_preview.hide()
+            self.library_view.refresh()
+            self.stack.setCurrentWidget(self.library_view)
+            return
+        if getattr(self, "_details_origin", None) is self.history_view:
+            self.progress.setVisible(False)
+            self.hover_preview.hide()
+            self.history_view.refresh()
+            self.stack.setCurrentWidget(self.history_view)
+            return
+        self.on_back_to_home()
+
+    def open_history_view(self):
+        self.history_view.refresh()
+        self._open_page(self.history_view)
+
+    def open_library_view(self):
+        self.library_view.refresh()
+        self._open_page(self.library_view)
+
+    def _open_page(self, page):
+        self.spotlight_timer.stop()
+        self.hover_preview.hide()
+        self.progress.setVisible(False)
+        self.stack.setCurrentWidget(page)
+
     def on_back_to_home(self):
         self.progress.setVisible(False)
         self.hover_preview.hide()
@@ -1462,6 +1622,74 @@ class MainWindow(QMainWindow):
         self._refresh_history_shelf()
         if self.spotlight_items:
             self.spotlight_timer.start()
+
+    def _remove_history_item(self, anime):
+        self.hover_preview.hide()
+        if history_mgr.remove(anime.id):
+            self._refresh_history_shelf()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not getattr(self, "_fitted", False):
+            self._fitted = True
+            QTimer.singleShot(0, self._fit_to_screen)
+            QTimer.singleShot(200, self._fit_to_screen)  # WM frame is final by now
+
+    def _fit_to_screen(self):
+        """Fill the screen's usable area exactly: not maximized, not fullscreen."""
+        if self.isMaximized() or self.isFullScreen():
+            return
+        import sys
+        if sys.platform == "win32" and self._fit_win32():
+            return
+        scr = self.screen() or QApplication.primaryScreen()
+        if not scr:
+            return
+        a = scr.availableGeometry()
+        fg, g = self.frameGeometry(), self.geometry()
+        l, t = g.x() - fg.x(), g.y() - fg.y()
+        r, b = fg.right() - g.right(), fg.bottom() - g.bottom()
+        w, h = a.width() - l - r, a.height() - t - b
+        if QApplication.platformName() == "wayland":
+            self.resize(w, h)  # compositor owns position
+        else:
+            self.setGeometry(a.x() + l, a.y() + t, w, h)
+
+    def _fit_win32(self) -> bool:
+        try:
+            import ctypes
+            from ctypes import wintypes as w
+            u, d = ctypes.windll.user32, ctypes.windll.dwmapi
+
+            class MI(ctypes.Structure):
+                _fields_ = [("cbSize", w.DWORD), ("rcMonitor", w.RECT),
+                            ("rcWork", w.RECT), ("dwFlags", w.DWORD)]
+
+            u.MonitorFromWindow.argtypes = [w.HWND, w.DWORD]
+            u.MonitorFromWindow.restype = w.HANDLE
+            u.GetMonitorInfoW.argtypes = [w.HANDLE, ctypes.POINTER(MI)]
+            u.SetWindowPos.argtypes = [w.HWND, w.HWND, ctypes.c_int, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, w.UINT]
+            d.DwmGetWindowAttribute.argtypes = [w.HWND, w.DWORD, ctypes.c_void_p, w.DWORD]
+
+            hwnd = w.HWND(int(self.winId()))
+            mi = MI()
+            mi.cbSize = ctypes.sizeof(MI)
+            u.GetMonitorInfoW(u.MonitorFromWindow(hwnd, 2), ctypes.byref(mi))
+            win, vis = w.RECT(), w.RECT()
+            u.GetWindowRect(hwnd, ctypes.byref(win))
+            # DWMWA_EXTENDED_FRAME_BOUNDS = 9: the visible frame, without invisible borders
+            if d.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(vis), ctypes.sizeof(vis)) != 0:
+                vis = win
+            il, it = vis.left - win.left, vis.top - win.top
+            ir, ib = win.right - vis.right, win.bottom - vis.bottom
+            wk = mi.rcWork
+            u.SetWindowPos(hwnd, None, wk.left - il, wk.top - it,
+                           (wk.right - wk.left) + il + ir, (wk.bottom - wk.top) + it + ib,
+                           0x0004 | 0x0010)  # SWP_NOZORDER | SWP_NOACTIVATE
+            return True
+        except Exception:
+            return False
 
     def _refresh_history_shelf(self):
         recent = history_mgr.get_recent_history()
@@ -1477,10 +1705,14 @@ class MainWindow(QMainWindow):
             total = max(h.get("total_episodes") or 1, h.get("last_episode", 1), 1)
             last = h.get("last_episode", 1)
 
-            if total > 1:
-                progress = min(95.0, (last / total) * 100.0)
-            else:
-                progress = 25.0
+            watched = set(h.get("watched_episodes") or [])
+            done = len(watched) if watched else max(last - 1, 0)  # old entries lack the list
+            frac = 0.0
+            if last not in watched:
+                pr = history_mgr.get_progress(h["id"], last)
+                if pr:
+                    frac = min(pr[0] / pr[1], 1.0)
+            progress = max(3.0, min(100.0, (done + frac) / total * 100.0))
 
             # Pull cached description if available
             cached_desc = ""
@@ -1552,6 +1784,11 @@ class MainWindow(QMainWindow):
         run_worker(worker)
 
     def open_details_view(self, anime: AnimeMedia):
+        cur = self.stack.currentWidget()
+        if cur in (self.history_view, self.library_view):
+            self._details_origin = cur
+        elif cur not in (self.details_view, self.upcoming_view, self.player_view):
+            self._details_origin = None
         self.spotlight_timer.stop()
         self.hover_preview.hide()
         self.progress.setVisible(False)
@@ -1664,7 +1901,7 @@ class MainWindow(QMainWindow):
         if not self.spotlight_items:
             return
         anime = self.spotlight_items[self.spotlight_index]
-        ep = history_mgr.get_next_episode(anime.id, anime.episodes or 1)
+        ep = history_mgr.get_resume_episode(anime.id, anime.episodes or 1)
         self.play_anime_episode(anime, ep)
 
     def on_error(self, msg: str):

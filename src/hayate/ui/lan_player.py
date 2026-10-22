@@ -185,6 +185,12 @@ class FloatingControlBar(QtWidgets.QWidget):
         self.vol_slider.setValue(100)
         card_layout.addWidget(self.vol_slider)
 
+        self.btn_settings = QtWidgets.QPushButton("⚙")
+        self.btn_settings.setToolTip("Playback speed & captions")
+        self.btn_settings.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.btn_settings.setFixedSize(36, 36)
+        card_layout.addWidget(self.btn_settings)
+
         self.btn_fullscreen = QtWidgets.QPushButton("🗗")
         self.btn_fullscreen.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.btn_fullscreen.setFixedSize(36, 36)
@@ -513,6 +519,13 @@ class LANPlayerWindow(QtWidgets.QDialog):
         self.vol_slider_docked.valueChanged.connect(self._on_volume_changed)
         d_layout.addWidget(self.vol_slider_docked)
 
+        self.btn_settings_docked = QtWidgets.QPushButton("⚙")
+        self.btn_settings_docked.setToolTip("Playback speed & captions")
+        self.btn_settings_docked.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.btn_settings_docked.setFixedSize(36, 36)
+        d_layout.addWidget(self.btn_settings_docked)
+
+        self.btn_settings_docked.clicked.connect(lambda: self._open_player_menu(self.btn_settings_docked))
         self.btn_fullscreen_docked = QtWidgets.QPushButton("⛶")
         self.btn_fullscreen_docked.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.btn_fullscreen_docked.setFixedSize(36, 36)
@@ -548,6 +561,7 @@ class LANPlayerWindow(QtWidgets.QDialog):
         self.floating_bar.btn_play.clicked.connect(self._toggle_play)
         self.floating_bar.btn_mute.clicked.connect(self._toggle_mute)
         self.floating_bar.btn_fullscreen.clicked.connect(self._toggle_fullscreen)
+        self.floating_bar.btn_settings.clicked.connect(lambda: self._open_player_menu(self.floating_bar.btn_settings))
         self.floating_bar.seek_slider.sliderMoved.connect(self._on_seek_moved)
         self.floating_bar.seek_slider.sliderPressed.connect(self._on_seek_pressed)
         self.floating_bar.seek_slider.sliderReleased.connect(self._on_seek_released)
@@ -608,6 +622,46 @@ class LANPlayerWindow(QtWidgets.QDialog):
             return
         self.is_bar_visible = False
         self.floating_bar.hide()
+
+    def _open_player_menu(self, btn):
+        from PyQt6.QtGui import QAction, QActionGroup
+        mp = self.player
+        menu = QtWidgets.QMenu(self)
+        menu.setStyleSheet(
+            "QMenu{background:#0f172a;color:#e2e8f0;border:1px solid #334155;padding:4px;}"
+            "QMenu::item{padding:6px 18px;}QMenu::item:selected{background:#1e293b;}"
+            "QMenu::item:disabled{color:#64748b;}")
+
+        cur = round(float(getattr(mp, "speed", lambda: 1.0)()), 2)
+        sp = menu.addMenu("Playback speed")
+        grp = QActionGroup(sp)
+        for r in (0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0):
+            a = QAction("Normal" if r == 1.0 else f"{r}x", sp, checkable=True)
+            a.setChecked(abs(r - cur) < 0.01)
+            a.triggered.connect(lambda _=False, r=r: mp.setSpeed(r))
+            grp.addAction(a)
+            sp.addAction(a)
+
+        cap = menu.addMenu("Captions")
+        tracks = getattr(mp, "subtitleTracks", lambda: [])()
+        if not tracks:
+            cap.addAction("None available").setEnabled(False)
+        else:
+            cg = QActionGroup(cap)
+            off = QAction("Off", cap, checkable=True)
+            off.setChecked(not any(t.get("selected") for t in tracks))
+            off.triggered.connect(lambda _=False: mp.setSubtitleTrack(None))
+            cg.addAction(off)
+            cap.addAction(off)
+            for t in tracks:
+                name = t.get("title") or t.get("lang") or f"Track {t.get('id')}"
+                a = QAction(str(name), cap, checkable=True)
+                a.setChecked(bool(t.get("selected")))
+                a.triggered.connect(lambda _=False, i=t.get("id"): mp.setSubtitleTrack(i))
+                cg.addAction(a)
+                cap.addAction(a)
+
+        menu.exec(btn.mapToGlobal(QtCore.QPoint(0, -menu.sizeHint().height())))
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():

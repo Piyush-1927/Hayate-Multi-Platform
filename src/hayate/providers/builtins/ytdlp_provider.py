@@ -1,5 +1,6 @@
 import os
 import subprocess
+from hayate.core import net
 import json
 import shutil
 import re
@@ -120,7 +121,7 @@ class YtDlpProvider(StreamProvider):
         matched_uploader = ""
 
         try:
-            res = subprocess.run(scan_cmd, capture_output=True, text=True, timeout=8, **_NOWIN)
+            res = subprocess.run(scan_cmd[:1] + net.ytdlp_args() + scan_cmd[1:], capture_output=True, text=True, timeout=8, **_NOWIN)
             if res.returncode == 0 and res.stdout.strip():
                 for line in res.stdout.strip().splitlines():
                     try:
@@ -151,7 +152,7 @@ class YtDlpProvider(StreamProvider):
                 "-j",
                 target_url,
             ]
-            ext_res = subprocess.run(extract_cmd, capture_output=True, text=True, timeout=12, **_NOWIN)
+            ext_res = subprocess.run(extract_cmd[:1] + net.ytdlp_args() + extract_cmd[1:], capture_output=True, text=True, timeout=12, **_NOWIN)
             if ext_res.returncode == 0 and ext_res.stdout.strip():
                 meta = json.loads(ext_res.stdout.strip().splitlines()[0])
                 direct_url = meta.get("url")
@@ -166,6 +167,62 @@ class YtDlpProvider(StreamProvider):
             print(f"[yt-dlp official provider error]: {e}")
 
         return None
+
+    DEFAULT_CHANNELS = ("https://www.youtube.com/@MuseAsia", "https://www.youtube.com/@AniOneAsia")
+    _NOISE = re.compile(r"multi[- ]?subs?|full episodes?|playlist|english sub(bed)?|eng sub|\bsubbed\b|\bdubbed\b", re.I)
+
+    def _channel_urls(self):
+        from hayate.core.settings import config_dir
+        f = config_dir() / "catalogue_channels.txt"  # one channel URL per line, # = comment
+        extra = []
+        if f.is_file():
+            extra = [l.strip() for l in f.read_text().splitlines() if l.strip() and not l.startswith("#")]
+        return [*self.DEFAULT_CHANNELS, *extra]
+
+    def catalogue_titles(self, refresh=False):
+        """Series titles from official channels' playlists (cached 24h)."""
+        import time
+        from hayate.core.settings import config_dir
+        cache = config_dir() / "catalogue_cache.json"
+        stale = []
+        if cache.is_file():
+            try:
+                d = json.loads(cache.read_text())
+                stale = d.get("titles") or []
+                if not refresh and time.time() - d["t"] < 86400:
+                    return stale
+            except Exception:
+                pass
+        exe = self._find_ytdlp()
+        if not exe:
+            return stale
+        failed = False
+        seen, out = set(), []
+        for url in self._channel_urls():
+            try:
+                r = subprocess.run([exe, *net.ytdlp_args(), "--flat-playlist", "-J", "--no-warnings", url.rstrip("/") + "/playlists"],
+                                   capture_output=True, text=True, timeout=90, **_NOWIN)
+                entries = json.loads(r.stdout).get("entries") or []
+            except Exception as e:
+                print(f"[catalogue] {url}: {e}")
+                failed = True
+                continue
+            for e in entries:
+                t = re.sub(r"\(.*?\)|\[.*?\]", "", e.get("title") or "")
+                t = re.sub(r"\s+", " ", self._NOISE.sub("", t)).strip(" |·-")
+                if len(t) > 2 and t.lower() not in seen:
+                    seen.add(t.lower()); out.append(t)
+        if failed and stale:
+            # offline / a channel failed: keep known titles, don't overwrite the
+            # good cache with a shrunken list, and retry on the next open
+            for t in stale:
+                if t.lower() not in seen:
+                    seen.add(t.lower()); out.append(t)
+            return out
+        if out:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps({"t": time.time(), "titles": out}))
+        return out
 
     def carries(self, title: str):
         return True

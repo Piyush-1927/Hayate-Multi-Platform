@@ -31,6 +31,12 @@ from hayate.providers import load_providers, provider_label
 from hayate.core.dialogs import dlg_open, dlg_save
 
 
+def _orig_ss(w):
+    from hayate.core.theme import _tracked
+    return _tracked.get(w) or w.styleSheet()
+
+
+
 def _ensure_check_icon() -> str:
     icon_path = cache_dir() / "check.png"
     if not icon_path.exists():
@@ -255,7 +261,7 @@ class SettingsView(QWidget):
         tr_row = QHBoxLayout()
         tr_row.addWidget(QLabel("Style:"))
         self.trans_combo = QComboBox()
-        self.trans_combo.setStyleSheet(self.prov_combo.styleSheet())
+        self.trans_combo.setStyleSheet(_orig_ss(self.prov_combo))
         for label, key in (("Slide (original)", "slide"), ("Wipe (directional)", "wipe"),
                            ("Circle grow", "grow"), ("Circle shrink (outer)", "outer"),
                            ("Circle from center", "center"), ("Fade", "fade")):
@@ -283,7 +289,7 @@ class SettingsView(QWidget):
         pg_row = QHBoxLayout()
         pg_row.addWidget(QLabel("Page transition:"))
         self.page_combo = QComboBox()
-        self.page_combo.setStyleSheet(self.prov_combo.styleSheet())
+        self.page_combo.setStyleSheet(_orig_ss(self.prov_combo))
         for label, key in (("Fade", "fade"), ("Slide", "slide"), ("Zoom", "zoom"), ("None", "none")):
             self.page_combo.addItem(label, key)
         self.page_combo.setCurrentIndex(max(self.page_combo.findData(load_settings().get("page_transition", "fade")), 0))
@@ -336,8 +342,42 @@ class SettingsView(QWidget):
             """)
         layout.addWidget(card_tr)
 
-        from hayate.core.theme import ThemeSettingsCard
-        layout.addWidget(ThemeSettingsCard())
+        from hayate.core.theme import AppearanceLauncherCard
+        layout.addWidget(AppearanceLauncherCard())
+        # Card: Cache
+        from hayate.ui.cache_slider import ClickOnlySlider
+        card_cache = self._create_card("Cache")
+        cc = QVBoxLayout(card_cache)
+        cc.setContentsMargins(25, 20, 25, 20); cc.setSpacing(12)
+        _cd = QLabel("Poster cache on disk. Bigger means fewer re-downloads; the oldest posters are removed when the limit is reached.")
+        _cd.setWordWrap(True)
+        _cd.setStyleSheet("color: #94a3b8; font-size: 12px; border: none; background: transparent;")
+        cc.addWidget(_cd)
+        _cset = load_settings()
+        self.cache_check = QCheckBox("Enable cache")
+        self.cache_check.setChecked(bool(_cset.get("cache_enabled", True)))
+        self.cache_check.setStyleSheet(_orig_ss(self.adult_checkbox))
+        cc.addWidget(self.cache_check)
+        cs_row = QHBoxLayout()
+        _cl = QLabel("Cache size:")
+        _cl.setStyleSheet("color: #ffffff; font-weight: 700; font-size: 13px; border: none; background: transparent;")
+        cs_row.addWidget(_cl)
+        self.cache_slider = ClickOnlySlider(25)
+        self.cache_slider.setRange(25, 2000)
+        self.cache_slider.setValue(int(_cset.get("cache_mb", 300)))
+        self.cache_slider.setStyleSheet(_orig_ss(self.blur_slider))
+        self.cache_lbl = QLabel(f"{self.cache_slider.value()} MB")
+        self.cache_lbl.setMinimumWidth(72)
+        self.cache_lbl.setStyleSheet("color: #38bdf8; font-weight: 700; font-size: 13px; border: none; background: transparent;")
+        self.cache_slider.valueChanged.connect(lambda v: self.cache_lbl.setText(f"{v} MB"))
+        self.cache_slider.committed.connect(self._on_cache_commit)
+        self.cache_check.toggled.connect(self._on_cache_toggled)
+        self.cache_slider.setEnabled(self.cache_check.isChecked())
+        cs_row.addWidget(self.cache_slider, 1)
+        cs_row.addWidget(self.cache_lbl)
+        cc.addLayout(cs_row)
+        layout.addWidget(card_cache)
+
         # Card 3: Watch History & Backup
         card_hist = self._create_card("Watch History Management")
         h_layout = QVBoxLayout(card_hist)
@@ -384,7 +424,59 @@ class SettingsView(QWidget):
         h_btns.addWidget(import_btn)
         h_btns.addStretch()
         h_layout.addLayout(h_btns)
+
+        _acc = ("QPushButton { background-color: #212130; color: #38bdf8; border: 1.5px solid #38bdf8;"
+                " border-radius: 8px; padding: 0 16px; font-weight: 700; }"
+                "QPushButton:hover { background-color: #38bdf8; color: #090a0f; }")
+        _plain = ("QPushButton { background-color: #212130; color: #e2e8f0; border: 1.5px solid #3d3d52;"
+                  " border-radius: 8px; padding: 0 16px; font-weight: 600; }"
+                  "QPushButton:hover { background-color: #2d2d42; }")
+        h_btns2 = QHBoxLayout()
+        for _txt, _slot, _qss in (("📤 Export Library (JSON)", self._export_library, _acc),
+                                  ("📂 Import Library (JSON)", self._import_library, _plain)):
+            _b = QPushButton(_txt)
+            _b.setFixedHeight(36)
+            _b.setCursor(Qt.CursorShape.PointingHandCursor)
+            _b.setStyleSheet(_qss)
+            _b.clicked.connect(_slot)
+            h_btns2.addWidget(_b)
+        h_btns2.addStretch()
+        h_layout.addLayout(h_btns2)
         layout.addWidget(card_hist)
+
+        # Card: Network & Privacy (always shown; the Tor toggle only appears if Tor is available)
+        from PyQt6.QtWidgets import QLineEdit
+        self.card_net = self._create_card("Network & Privacy")
+        n_layout = QVBoxLayout(self.card_net)
+        n_layout.setContentsMargins(24, 20, 24, 20)
+        n_layout.setSpacing(10)
+        self.net_desc = QLabel("Route metadata, search, posters, stream lookups and playback through a proxy. "
+                               "Devices on your LAN always connect directly. Restart Hayate after changing this. "
+                               "With a socks5h:// proxy or Tor, the proxy resolves DNS itself.")
+        self.net_desc.setWordWrap(True)
+        self.net_desc.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        n_layout.addWidget(self.net_desc)
+        self.dns_check = QCheckBox("Private DNS (DNS-over-HTTPS)")
+        self.dns_check.setStyleSheet(_orig_ss(self.adult_checkbox))
+        self.dns_check.toggled.connect(self._on_dns_toggled)
+        n_layout.addWidget(self.dns_check)
+        self.proxy_check = QCheckBox("Use custom proxy")
+        self.proxy_check.setStyleSheet(_orig_ss(self.adult_checkbox))
+        self.proxy_check.toggled.connect(self._on_proxy_toggled)
+        n_layout.addWidget(self.proxy_check)
+        self.proxy_edit = QLineEdit(self.settings.get("proxy_url", ""))
+        self.proxy_edit.setPlaceholderText("socks5h://127.0.0.1:1080   or   http://host:8080")
+        self.proxy_edit.editingFinished.connect(self._on_proxy_edited)
+        n_layout.addWidget(self.proxy_edit)
+        self.tor_check = QCheckBox("Route traffic through Tor")
+        self.tor_check.setStyleSheet(_orig_ss(self.adult_checkbox))
+        self.tor_check.toggled.connect(self._on_tor_toggled)
+        n_layout.addWidget(self.tor_check)
+        self.net_status = QLabel("")
+        self.net_status.setWordWrap(True)
+        n_layout.addWidget(self.net_status)
+        layout.addWidget(self.card_net)
+        self._refresh_network()
 
         # Card 4: Storage & Cache Maintenance
         card_cache = self._create_card("Cache Maintenance")
@@ -539,6 +631,17 @@ class SettingsView(QWidget):
             return True
         return super().eventFilter(obj, ev)
 
+    def _on_cache_toggled(self, on):
+        from hayate.core.image_cache import apply_cache_settings
+        s = load_settings(); s["cache_enabled"] = bool(on); save_settings(s)
+        self.cache_slider.setEnabled(bool(on))
+        apply_cache_settings()
+
+    def _on_cache_commit(self, mb):
+        from hayate.core.image_cache import apply_cache_settings
+        s = load_settings(); s["cache_mb"] = int(mb); save_settings(s)
+        apply_cache_settings()
+
     def _create_card(self, title_text: str) -> QFrame:
         card = QFrame()
         card.setObjectName("settings_card")
@@ -580,6 +683,7 @@ class SettingsView(QWidget):
         """Reloads providers from disk and syncs the dropdown without restarting."""
         self.providers = load_providers()
         current_key = self.settings.get("provider", "ytdlp")
+        fell_back = False
 
         self.prov_combo.blockSignals(True)
         self.prov_combo.clear()
@@ -598,12 +702,16 @@ class SettingsView(QWidget):
                 if key == current_key:
                     active_idx = idx
             if current_key not in real_providers:
-                active_idx = 0
-            self.settings["provider"] = "ytdlp"
-            save_settings(self.settings)
+                fb = "ytdlp" if "ytdlp" in real_providers else next(iter(real_providers))
+                active_idx = list(real_providers).index(fb)
+                self.settings["provider"] = fb
+                save_settings(self.settings)
+                fell_back = True
 
         self.prov_combo.setCurrentIndex(active_idx)
         self.prov_combo.blockSignals(False)
+        if fell_back:
+            self.settings_changed.emit()
 
     def _on_transition_changed(self, idx: int):
         d = load_settings()
@@ -706,40 +814,221 @@ class SettingsView(QWidget):
             Path(cache_dir() / "schedule_cache.json").unlink(missing_ok=True)
             self.settings_changed.emit()
 
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._refresh_network()
+
+    @staticmethod
+    def _valid_proxy(url):
+        from urllib.parse import urlsplit
+        try:
+            u = urlsplit(url)
+            u.port
+        except ValueError:
+            return False
+        return u.scheme in ("http", "https", "socks5", "socks5h") and bool(u.hostname)
+
+    def _set_net_status(self, text, role="text_secondary"):
+        from hayate.core.theme import theme
+        self.net_status.setText(text)
+        self.net_status.setStyleSheet(
+            f"color: {theme.rgba(role)}; font-size: 12px; font-weight: 600; background: transparent;")
+
+    def _refresh_network(self):
+        from urllib.parse import urlsplit
+        from hayate.core import net
+        from hayate.core.theme import theme
+        mode = self.settings.get("proxy_mode", "off")
+        port = net.detect_tor()
+        self.tor_check.setVisible(port is not None or mode == "tor")  # hidden unless Tor is available
+        self.dns_check.blockSignals(True)
+        self.dns_check.setChecked(self.settings.get("dns_mode", "doh") == "doh")
+        self.dns_check.blockSignals(False)
+        for w, on in ((self.proxy_check, mode == "custom"), (self.tor_check, mode == "tor")):
+            w.blockSignals(True)
+            w.setChecked(on)
+            w.blockSignals(False)
+        if mode == "tor" and port is None:
+            self._set_net_status("Tor isn't running, so Hayate's network requests are blocked. "
+                                 "Start Tor or turn this off.", "danger")
+        elif mode == "tor":
+            self._set_net_status(f"Routing through Tor (127.0.0.1:{port}).", "accent")
+        elif mode == "custom":
+            url = self.settings.get("proxy_url", "")
+            if not self._valid_proxy(url):
+                self._set_net_status("The proxy URL is invalid, so network requests are blocked.", "danger")
+            else:
+                u = urlsplit(url)
+                note = " Tip: use socks5h:// so DNS isn't resolved locally." if u.scheme == "socks5" else ""
+                self._set_net_status(f"Routing through {u.scheme}://{u.hostname}:{u.port}.{note}", "accent")
+        else:
+            self._set_net_status("Direct connection with private DNS." if self.settings.get("dns_mode", "doh") == "doh"
+                                 else "Direct connection with system DNS.")
+
+    def _save_net(self):
+        from hayate.core import net
+        save_settings(self.settings)
+        net.invalidate()
+        self._refresh_network()
+        self.settings_changed.emit()
+
+    def _on_dns_toggled(self, on):
+        self.settings["dns_mode"] = "doh" if on else "system"
+        self._save_net()
+
+    def _on_proxy_toggled(self, on):
+        if on:
+            url = self.proxy_edit.text().strip()
+            if not self._valid_proxy(url):
+                self.proxy_check.blockSignals(True)
+                self.proxy_check.setChecked(False)
+                self.proxy_check.blockSignals(False)
+                QMessageBox.warning(self, "Invalid proxy",
+                                    "Enter a proxy URL like socks5h://127.0.0.1:1080 or http://host:8080.")
+                return
+            self.settings["proxy_url"] = url
+            self.settings["proxy_mode"] = "custom"
+        elif self.settings.get("proxy_mode") == "custom":
+            self.settings["proxy_mode"] = "off"
+        self._save_net()
+
+    def _on_proxy_edited(self):
+        url = self.proxy_edit.text().strip()
+        if url and not self._valid_proxy(url):
+            self._set_net_status("Invalid proxy URL (use http://, socks5:// or socks5h://host:port).", "danger")
+            return
+        self.settings["proxy_url"] = url
+        if not url and self.settings.get("proxy_mode") == "custom":
+            self.settings["proxy_mode"] = "off"
+        self._save_net()
+
+    def _on_tor_toggled(self, on):
+        from hayate.core import net
+        if on:
+            port = net.detect_tor()
+            if port is None:
+                self.tor_check.blockSignals(True)
+                self.tor_check.setChecked(False)
+                self.tor_check.blockSignals(False)
+                QMessageBox.warning(self, "Tor not found",
+                                    "No Tor service found on 127.0.0.1 (ports 9050 / 9150). Start Tor and try again.")
+                return
+            self.settings["tor_port"] = port
+            self.settings["proxy_mode"] = "tor"
+        elif self.settings.get("proxy_mode") == "tor":
+            self.settings["proxy_mode"] = "off"
+        self._save_net()
+
     def _export_history(self):
-        hist_path = history_mgr.file_path
-        if not hist_path.exists():
+        if not history_mgr.data:
             QMessageBox.information(self, "Export Notice", "No watch history recorded yet.")
             return
-
         file_dest, _ = dlg_save(
             self, "Export Watch History", "hayate_history_backup.json", "JSON Files (*.json)"
         )
-        if file_dest:
-            try:
-                data = hist_path.read_text(encoding="utf-8")
-                Path(file_dest).write_text(data, encoding="utf-8")
-                QMessageBox.information(self, "Export Complete", f"Watch history exported successfully to:\n{file_dest}")
-            except Exception as e:
-                QMessageBox.warning(self, "Export Error", f"Failed to export history: {e}")
+        if not file_dest:
+            return
+        try:
+            Path(file_dest).write_text(
+                json.dumps(history_mgr.export_payload(), indent=2, ensure_ascii=False), encoding="utf-8")
+            QMessageBox.information(self, "Export Complete",
+                f"Exported {len(history_mgr.data)} anime to:\n{file_dest}")
+        except Exception as e:
+            QMessageBox.warning(self, "Export Error", f"Failed to export history: {e}")
 
     def _import_history(self):
         file_src, _ = dlg_open(
             self, "Import Watch History Backup", "", "JSON Files (*.json)"
         )
-        if file_src:
-            try:
-                content = Path(file_src).read_text(encoding="utf-8")
-                parsed = json.loads(content)
-                if isinstance(parsed, dict):
-                    history_mgr.data = parsed
-                    history_mgr._save()
-                    QMessageBox.information(self, "Import Complete", "Watch history restored successfully!")
-                    self.settings_changed.emit()
-                else:
-                    QMessageBox.warning(self, "Invalid Backup", "The selected JSON file is not a valid Hayate history backup.")
-            except Exception as e:
-                QMessageBox.warning(self, "Import Error", f"Failed to read backup: {e}")
+        if not file_src:
+            return
+        try:
+            incoming = history_mgr.parse_backup(json.loads(Path(file_src).read_text(encoding="utf-8")))
+        except Exception as e:
+            QMessageBox.warning(self, "Invalid Backup", f"This is not a valid Hayate history backup.\n\n{e}")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Import Watch History")
+        box.setText(f"The backup contains {len(incoming)} anime.")
+        box.setInformativeText(
+            "Merge keeps your current history and adds the backup to it.\n"
+            "Replace overwrites it (a .bak copy of the old file is kept).")
+        merge_btn = box.addButton("Merge", QMessageBox.ButtonRole.AcceptRole)
+        replace_btn = box.addButton("Replace", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(merge_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        try:
+            if clicked is merge_btn:
+                added, updated = history_mgr.merge(incoming)
+                msg = f"Merged: {added} added, {updated} updated."
+            elif clicked is replace_btn:
+                history_mgr.replace(incoming)
+                msg = f"History replaced with {len(incoming)} anime."
+            else:
+                return
+        except Exception as e:
+            QMessageBox.warning(self, "Import Error", f"Failed to import: {e}")
+            return
+        QMessageBox.information(self, "Import Complete", msg)
+        self.settings_changed.emit()
+
+    def _export_library(self):
+        from hayate import library_db as ldb
+        con = ldb.db()
+        payload = ldb.export_payload(con)
+        if not payload["library"]:
+            QMessageBox.information(self, "Export Notice", "Your library is empty.")
+            return
+        file_dest, _ = dlg_save(
+            self, "Export Library", "hayate_library_backup.json", "JSON Files (*.json)")
+        if not file_dest:
+            return
+        try:
+            Path(file_dest).write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            QMessageBox.information(self, "Export Complete",
+                f"Exported {len(payload['library'])} anime to:\n{file_dest}")
+        except Exception as e:
+            QMessageBox.warning(self, "Export Error", f"Failed to export library: {e}")
+
+    def _import_library(self):
+        from hayate import library_db as ldb
+        file_src, _ = dlg_open(self, "Import Library Backup", "", "JSON Files (*.json)")
+        if not file_src:
+            return
+        try:
+            incoming = ldb.parse_backup(json.loads(Path(file_src).read_text(encoding="utf-8")))
+        except Exception as e:
+            QMessageBox.warning(self, "Invalid Backup", f"This is not a valid Hayate library backup.\n\n{e}")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Import Library")
+        box.setText(f"The backup contains {len(incoming)} anime.")
+        box.setInformativeText(
+            "Merge keeps your current library and adds newer entries from the backup.\n"
+            "Replace overwrites it (a library.db.bak copy of the old data is kept).")
+        merge_btn = box.addButton("Merge", QMessageBox.ButtonRole.AcceptRole)
+        replace_btn = box.addButton("Replace", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(merge_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        con = ldb.db()
+        try:
+            if clicked is merge_btn:
+                added, updated = ldb.merge(con, incoming)
+                msg = f"Merged: {added} added, {updated} updated."
+            elif clicked is replace_btn:
+                ldb.replace(con, incoming)
+                msg = f"Library replaced with {len(incoming)} anime."
+            else:
+                return
+        except Exception as e:
+            QMessageBox.warning(self, "Import Error", f"Failed to import: {e}")
+            return
+        QMessageBox.information(self, "Import Complete", msg)
 
     def _clear_cache(self, *args):
         try:

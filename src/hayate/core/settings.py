@@ -21,6 +21,11 @@ DEFAULTS = {
     "allow_adult": False,
     "quality": "best",
     "preferred_audio": "sub",  # "sub", "dub_eng", "dub_hin", or "any"
+    "cache_enabled": True,
+    "cache_mb": 300,
+    "proxy_mode": "off",  # "off" | "custom" | "tor"
+    "proxy_url": "",
+    "tor_port": 9050,
 }
 
 def config_dir() -> Path:

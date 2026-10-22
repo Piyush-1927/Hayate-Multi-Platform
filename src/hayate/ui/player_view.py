@@ -15,6 +15,15 @@ from hayate.core.player import PlayerController
 from hayate.core.history import history_mgr
 
 
+QUALITY_OPTIONS = (
+    ("Best Available (Auto)", "best"),
+    ("1080p (FHD)", "1080"),
+    ("720p (HD Balanced)", "720"),
+    ("480p (SD)", "480"),
+    ("Data Saver (Lowest)", "worst"),
+)
+
+
 def format_time(ms: int) -> str:
     seconds = max(0, ms // 1000)
     m, s = divmod(seconds, 60)
@@ -167,12 +176,30 @@ class FloatingControlBar(QtWidgets.QWidget):
         self.vol_slider.setValue(100)
         card_layout.addWidget(self.vol_slider)
 
+        self.btn_settings = QPushButton("⚙")
+        self.btn_settings.setToolTip("Playback speed & captions")
+        self.btn_settings.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_settings.setFixedSize(36, 36)
+        card_layout.addWidget(self.btn_settings)
+
         self.btn_fullscreen = QPushButton("⛶")
         self.btn_fullscreen.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_fullscreen.setFixedSize(36, 36)
         card_layout.addWidget(self.btn_fullscreen)
 
         layout.addWidget(self.card)
+
+
+def _skip_safe(fn):
+    import functools, traceback
+
+    @functools.wraps(fn)
+    def w(*a, **k):
+        try:
+            return fn(*a, **k)
+        except Exception:
+            traceback.print_exc()
+    return w
 
 
 class PlayerView(QWidget):
@@ -224,6 +251,7 @@ class PlayerView(QWidget):
         self._initialize_playback()
         self._setup_shortcuts()
         self._connect_signals()
+        self._build_skip_btn()
 
     def _initialize_playback(self):
         """Detect the desktop backend once and initialize embedded libmpv."""
@@ -362,6 +390,18 @@ class PlayerView(QWidget):
         self.audio_combo.addItem("Any Dub", "any_dub")
         self.audio_combo.currentIndexChanged.connect(self._on_audio_changed)
         filter_bar.addWidget(self.audio_combo)
+
+        self.quality_combo = QComboBox()
+        self.quality_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.quality_combo.setFixedHeight(30)
+        from hayate.core.theme import _tracked as _tr
+        self.quality_combo.setStyleSheet(_tr.get(self.audio_combo) or self.audio_combo.styleSheet())
+        for _label, _val in QUALITY_OPTIONS:
+            self.quality_combo.addItem(_label, _val)
+        _q = self._settings().get("playback_quality", "best")
+        self.quality_combo.setCurrentIndex(max(self.quality_combo.findData(_q), 0))
+        self.quality_combo.currentIndexChanged.connect(self._on_quality_changed)
+        filter_bar.addWidget(self.quality_combo)
         s_layout.addLayout(filter_bar)
 
         self.chunk_scroll = QScrollArea()
@@ -516,6 +556,12 @@ class PlayerView(QWidget):
         self.vol_slider_docked.valueChanged.connect(self._on_volume_changed)
         card_layout.addWidget(self.vol_slider_docked)
 
+        self.btn_settings_docked = QPushButton("⚙")
+        self.btn_settings_docked.setToolTip("Playback speed & captions")
+        self.btn_settings_docked.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_settings_docked.setFixedSize(36, 36)
+        card_layout.addWidget(self.btn_settings_docked)
+
         self.btn_fullscreen_docked = QPushButton("⛶")
         self.btn_fullscreen_docked.setToolTip("Toggle Fullscreen")
         self.btn_fullscreen_docked.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -556,6 +602,7 @@ class PlayerView(QWidget):
         self.floating_bar.btn_play.clicked.connect(self._toggle_play)
         self.floating_bar.btn_mute.clicked.connect(self._toggle_mute)
         self.floating_bar.btn_fullscreen.clicked.connect(self._toggle_fullscreen)
+        self.floating_bar.btn_settings.clicked.connect(lambda: self._open_player_menu(self.floating_bar.btn_settings))
 
         # Docked bar buttons
         self.btn_backward_docked.clicked.connect(lambda: self._seek_relative(-10000))
@@ -563,6 +610,7 @@ class PlayerView(QWidget):
         self.btn_play_docked.clicked.connect(self._toggle_play)
         self.btn_mute_docked.clicked.connect(self._toggle_mute)
         self.btn_fullscreen_docked.clicked.connect(self._toggle_fullscreen)
+        self.btn_settings_docked.clicked.connect(lambda: self._open_player_menu(self.btn_settings_docked))
         self.floating_bar.seek_slider.sliderPressed.connect(self._on_seek_pressed)
         self.floating_bar.seek_slider.sliderReleased.connect(self._on_seek_released)
         self.floating_bar.vol_slider.valueChanged.connect(self._on_volume_changed)
@@ -629,6 +677,48 @@ class PlayerView(QWidget):
         self.is_bar_visible = False
         self.floating_bar.hide()
 
+    def _open_player_menu(self, btn):
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QAction, QActionGroup
+        from PyQt6.QtCore import QPoint
+        mp = self.media_player
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu{background:#0f172a;color:#e2e8f0;border:1px solid #334155;padding:4px;}"
+            "QMenu::item{padding:6px 18px;}QMenu::item:selected{background:#1e293b;}"
+            "QMenu::item:disabled{color:#64748b;}")
+
+        cur = round(float(getattr(mp, "speed", lambda: 1.0)()), 2)
+        sp = menu.addMenu("Playback speed")
+        grp = QActionGroup(sp)
+        for r in (0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0):
+            a = QAction("Normal" if r == 1.0 else f"{r}x", sp, checkable=True)
+            a.setChecked(abs(r - cur) < 0.01)
+            a.triggered.connect(lambda _=False, r=r: mp.setSpeed(r))
+            grp.addAction(a)
+            sp.addAction(a)
+
+        cap = menu.addMenu("Captions")
+        tracks = getattr(mp, "subtitleTracks", lambda: [])()
+        if not tracks:
+            cap.addAction("None available").setEnabled(False)
+        else:
+            cg = QActionGroup(cap)
+            off = QAction("Off", cap, checkable=True)
+            off.setChecked(not any(t.get("selected") for t in tracks))
+            off.triggered.connect(lambda _=False: mp.setSubtitleTrack(None))
+            cg.addAction(off)
+            cap.addAction(off)
+            for t in tracks:
+                name = t.get("title") or t.get("lang") or f"Track {t.get('id')}"
+                a = QAction(str(name), cap, checkable=True)
+                a.setChecked(bool(t.get("selected")))
+                a.triggered.connect(lambda _=False, i=t.get("id"): mp.setSubtitleTrack(i))
+                cg.addAction(a)
+                cap.addAction(a)
+
+        menu.exec(btn.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
+
     def _toggle_fullscreen(self):
         w = self.window()
         if w.isFullScreen():
@@ -682,7 +772,11 @@ class PlayerView(QWidget):
         self.title_lbl.setText(f"{anime.title}  —  EP {ep}")
         self.side_title.setText(f"Episodes ({anime.episodes})")
 
-        pref_audio = self.player_ctrl.settings.get("preferred_audio", "sub") if hasattr(self.player_ctrl, "settings") else "sub"
+        from hayate.core.settings import load_settings as _ls
+
+        _st = _ls()
+
+        pref_audio = _st.get("anime_audio_overrides", {}).get(str(anime.id)) or _st.get("preferred_audio", "sub")
         f_idx = self.audio_combo.findData(pref_audio)
         if f_idx >= 0:
             self.audio_combo.setCurrentIndex(f_idx)
@@ -755,11 +849,31 @@ class PlayerView(QWidget):
         if not self.anime:
             return
         val = self.audio_combo.itemData(idx)
-        if hasattr(self.player_ctrl, "settings"):
-            from hayate.core.settings import save_settings
-            overrides = self.player_ctrl.settings.setdefault("anime_audio_overrides", {})
-            overrides[str(self.anime.id)] = val
-            save_settings(self.player_ctrl.settings)
+        from hayate.core.settings import load_settings, save_settings
+        st = load_settings()
+        st.setdefault("anime_audio_overrides", {})[str(self.anime.id)] = val
+        save_settings(st)
+        if getattr(self, "active_ep", None):
+            self.play_episode(self.active_ep)  # apply the new audio now
+
+    def _settings(self):
+        from hayate.core.settings import load_settings
+        return load_settings()
+
+    def _sync_audio_from_settings(self):
+        st = self._settings()
+        val = st.get("anime_audio_overrides", {}).get(str(self.anime.id)) or st.get("preferred_audio", "sub")
+        self.audio_combo.blockSignals(True)
+        self.audio_combo.setCurrentIndex(max(self.audio_combo.findData(val), 0))
+        self.audio_combo.blockSignals(False)
+
+    def _on_quality_changed(self, idx: int):
+        from hayate.core.settings import load_settings, save_settings
+        st = load_settings()
+        st["playback_quality"] = self.quality_combo.itemData(idx)
+        save_settings(st)
+        if self.anime and getattr(self, "active_ep", None):
+            self.play_episode(self.active_ep)  # restarts the episode at the new quality
 
     def play_episode(self, ep: int):
         if not self.anime:
@@ -773,6 +887,8 @@ class PlayerView(QWidget):
         self.title_lbl.setText(f"{self.anime.title}  —  EP {ep}")
         self.progress_bar.setVisible(True)
         self.placeholder_label.setText(f"Loading Episode {ep}...")
+        self._skip_segments, self._skipped, self._skip_kind = {}, set(), None
+        self.skip_btn.hide()
         self.placeholder_label.show()
 
         for idx in range(self.ep_list.count()):
@@ -783,7 +899,9 @@ class PlayerView(QWidget):
                 break
 
         anime = self.anime
+        self._sync_audio_from_settings()
         dub_pref = self.audio_combo.currentData() or "sub"
+        quality = self.quality_combo.currentData() or "best"
 
         def _resolve():
             provider = self.player_ctrl.active_provider()
@@ -791,13 +909,16 @@ class PlayerView(QWidget):
                 self._stream_failed.emit("No streaming provider installed. Please install or select a provider in Settings.")
                 return
             try:
-                stream = provider.get_stream(anime.title, ep, dub=dub_pref)
+                stream = provider.get_stream(anime.title, ep, dub=dub_pref, quality=quality)
             except Exception as e:
                 self._stream_failed.emit(f"Stream source failed: {e}")
                 return
             if not stream or not stream.url:
                 self._stream_failed.emit(f"Episode {ep} not available on this provider.")
                 return
+            if not hasattr(self, "_stream_by_url"):
+                self._stream_by_url = {}
+            self._stream_by_url[stream.url] = stream
             self._stream_resolved.emit(anime, ep, stream.url)
 
         threading.Thread(target=_resolve, daemon=True).start()
@@ -811,7 +932,19 @@ class PlayerView(QWidget):
             return
 
         self.placeholder_label.hide()
-        self.media_player.setSource(QUrl(url))
+        st = getattr(self, "_stream_by_url", {}).pop(url, None)
+        self.media_player.setSource(
+            QUrl(url),
+            getattr(st, "referer", ""),
+            getattr(st, "headers", None),
+            getattr(st, "subtitles", ()),
+        )
+        pr = history_mgr.get_progress(anime.id, ep)
+        if pr and hasattr(self.media_player, "setStartPosition"):
+            self.media_player.setStartPosition(max(0.0, pr[0] - 3.0))
+        self._prog_ctx = (anime.id, ep)
+        self._aniskip.request(anime.id, ep)
+        self._hook_progress()
         self.media_player.play()
 
         history_mgr.record_watch(
@@ -822,6 +955,101 @@ class PlayerView(QWidget):
             banner_url=anime.banner_url,
             total_episodes=anime.episodes,
         )
+
+    def _hook_progress(self):
+        if getattr(self, "_progress_hooked", False) or self.media_player is None:
+            return
+        self._progress_hooked = True
+        self.media_player.positionChanged.connect(self._save_progress)
+        self.media_player.playbackStateChanged.connect(lambda *_: history_mgr.flush())
+        from PyQt6.QtCore import QCoreApplication
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(history_mgr.flush)
+
+    def _save_progress(self, ms: int):
+        ctx = getattr(self, "_prog_ctx", None)
+        if not ctx or ms <= 0 or self.media_player is None:
+            return
+        history_mgr.set_progress(ctx[0], ctx[1], ms / 1000.0, self.media_player.duration() / 1000.0)
+
+    # ---- AniSkip ---------------------------------------------------------
+    def _build_skip_btn(self):
+        from hayate.core.aniskip import AniSkip
+        from hayate.core.theme import theme
+        self._skip_segments, self._skipped, self._skip_kind = {}, set(), None
+        self._aniskip = AniSkip(self)
+        self._aniskip.ready.connect(self._on_skip_ready)
+        self.skip_btn = QPushButton("Skip Intro", self)
+        self.skip_btn.setFixedHeight(40)
+        self.skip_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.skip_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.skip_btn.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                                     | Qt.WindowType.WindowStaysOnTopHint
+                                     | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.skip_btn.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.skip_btn.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.skip_btn.clicked.connect(self._do_skip)
+        self.skip_btn.hide()
+        self._style_skip_btn()
+        theme.changed.connect(self._style_skip_btn)
+
+    def _style_skip_btn(self, *_):
+        from hayate.core.theme import theme
+        try:
+            fg, edge = theme.rgba("accent"), theme.rgba("accent", 0.7)
+        except Exception:
+            fg, edge = "#38bdf8", "rgba(56,189,248,180)"
+        self.skip_btn.setStyleSheet(
+            "QPushButton { background: rgba(12,12,18,150); color: %s; border: 1.5px solid %s;"
+            " border-radius: 10px; padding: 0 20px; font-size: 13px; font-weight: 800; }"
+            "QPushButton:hover { background: rgba(12,12,18,210); }" % (fg, edge))
+
+    @_skip_safe
+    def _on_skip_ready(self, anilist_id: int, ep: int, seg: dict):
+        if self.anime and anilist_id == self.anime.id and ep == self.active_ep:
+            self._skip_segments = seg
+
+    @_skip_safe
+    def _update_skip_btn(self, pos: int):
+        kind = None
+        for k in ("op", "ed"):
+            seg = self._skip_segments.get(k)
+            if seg and k not in self._skipped and seg[0] <= pos < seg[1] - 1000:
+                kind = k
+                break
+        if kind is None:
+            if self._skip_kind is not None:
+                self._skip_kind = None
+                self.skip_btn.hide()
+            return
+        if kind != self._skip_kind:
+            self._skip_kind = kind
+            self.skip_btn.setText("Skip Intro" if kind == "op" else "Skip Outro")
+            self.skip_btn.adjustSize()
+            self.skip_btn.setFixedHeight(40)
+        vc = self.findChild(VideoOverlayWidget)
+        if vc is not None:
+            br = vc.mapToGlobal(QPoint(vc.width(), vc.height()))
+            lift = 110 if self.window().isFullScreen() else 28
+            self.skip_btn.move(br.x() - self.skip_btn.width() - 32,
+                               br.y() - self.skip_btn.height() - lift)
+        self.skip_btn.show()
+        self.skip_btn.raise_()
+
+    def hideEvent(self, event):
+        if hasattr(self, "skip_btn"):
+            self._skip_kind = None
+            self.skip_btn.hide()
+        super().hideEvent(event)
+
+    def _do_skip(self):
+        seg = self._skip_segments.get(self._skip_kind)
+        if seg and self.media_player is not None:
+            self._skipped.add(self._skip_kind)
+            self.media_player.setPosition(seg[1])
+        self._skip_kind = None
+        self.skip_btn.hide()
 
     def _on_stream_error(self, err_msg: str):
         self.progress_bar.setVisible(False)
@@ -871,6 +1099,7 @@ class PlayerView(QWidget):
             self.floating_bar.seek_slider.setValue(pos)
         dur = self.media_player.duration()
         self._update_time_label(pos, dur)
+        self._update_skip_btn(pos)
 
     def _on_duration_changed(self, dur: int):
         self.seek_slider_docked.setRange(0, dur)
