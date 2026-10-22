@@ -233,6 +233,7 @@ class NavigationMenuPopup(QFrame):
     schedule_clicked = pyqtSignal()
     catalogue_clicked = pyqtSignal()
     history_clicked = pyqtSignal()
+    library_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -276,7 +277,8 @@ class NavigationMenuPopup(QFrame):
         btn_sched.clicked.connect(self._on_sched)
         l.addWidget(btn_sched)
         for text, sig in (("📚  Catalogue", self.catalogue_clicked),
-                          ("🕘  Watch History", self.history_clicked)):
+                          ("🕘  Watch History", self.history_clicked),
+                          ("🔖  Library", self.library_clicked)):
             b = QPushButton(text); b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _, s=sig: (self.hide(), s.emit()))
             l.addWidget(b)
@@ -998,7 +1000,7 @@ class PosterCard(QWidget):
     remove_requested = pyqtSignal(AnimeMedia)
 
     def __init__(self, anime: AnimeMedia, progress_percent: float = 0.0, priority: int = 10,
-                 parent=None, removable: bool = False):
+                 parent=None, removable: bool = False, remove_tip: str = "Remove from history"):
         super().__init__(parent)
         self.anime = anime
         self.setFixedSize(185, 305)
@@ -1035,7 +1037,7 @@ class PosterCard(QWidget):
             self.remove_btn = QPushButton("✕", self)
             self.remove_btn.setFixedSize(28, 28)
             self.remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.remove_btn.setToolTip("Remove from history")
+            self.remove_btn.setToolTip(remove_tip)
             self.remove_btn.move(185 - 28 - 8, 8)
             self.remove_btn.clicked.connect(lambda: self.remove_requested.emit(self.anime))
             self.remove_btn.hide()
@@ -1281,6 +1283,7 @@ class MainWindow(QMainWindow):
         self.nav_popup.schedule_clicked.connect(self.open_schedule_view)
         self.nav_popup.catalogue_clicked.connect(self.open_catalogue_view)
         self.nav_popup.history_clicked.connect(self.open_history_view)
+        self.nav_popup.library_clicked.connect(self.open_library_view)
 
         self.menu_btn = HamburgerButton()
         self.menu_btn.clicked.connect(self.toggle_nav_popup)
@@ -1451,6 +1454,13 @@ class MainWindow(QMainWindow):
         self.history_view.card_hovered.connect(self._show_hover_preview)
         self.history_view.scrolled.connect(self.hover_preview.hide)
         self.stack.addWidget(self.history_view)
+        from hayate.ui.library_view import LibraryView
+        self.library_view = LibraryView()
+        self.library_view.back_requested.connect(self.on_back_to_home)
+        self.library_view.card_clicked.connect(self.open_details_view)
+        self.library_view.card_hovered.connect(self._show_hover_preview)
+        self.library_view.scrolled.connect(self.hover_preview.hide)
+        self.stack.addWidget(self.library_view)
 
         # Search View (Page 4)
         self.search_view = SearchView(poster_card_cls=PosterCard)
@@ -1480,7 +1490,7 @@ class MainWindow(QMainWindow):
         shelf.card_hovered.connect(self._show_hover_preview)
 
     def _show_hover_preview(self, anime: AnimeMedia, global_pos: QPoint, card_widget: QWidget):
-        if self.stack.currentIndex() != 0 and self.stack.currentWidget() not in (self.catalogue_view, self.history_view):
+        if self.stack.currentIndex() != 0 and self.stack.currentWidget() not in (self.catalogue_view, self.history_view, self.library_view):
             return
         self.hover_preview.set_anime(anime)
 
@@ -1562,6 +1572,12 @@ class MainWindow(QMainWindow):
         self._open_page(self.catalogue_view)
 
     def _back_from_details(self):
+        if getattr(self, "_details_origin", None) is self.library_view:
+            self.progress.setVisible(False)
+            self.hover_preview.hide()
+            self.library_view.refresh()
+            self.stack.setCurrentWidget(self.library_view)
+            return
         if getattr(self, "_details_origin", None) is self.history_view:
             self.progress.setVisible(False)
             self.hover_preview.hide()
@@ -1573,6 +1589,10 @@ class MainWindow(QMainWindow):
     def open_history_view(self):
         self.history_view.refresh()
         self._open_page(self.history_view)
+
+    def open_library_view(self):
+        self.library_view.refresh()
+        self._open_page(self.library_view)
 
     def _open_page(self, page):
         self.spotlight_timer.stop()
@@ -1750,7 +1770,7 @@ class MainWindow(QMainWindow):
 
     def open_details_view(self, anime: AnimeMedia):
         cur = self.stack.currentWidget()
-        if cur is self.history_view:
+        if cur in (self.history_view, self.library_view):
             self._details_origin = cur
         elif cur not in (self.details_view, self.upcoming_view, self.player_view):
             self._details_origin = None

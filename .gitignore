@@ -76,3 +76,4 @@ build-dir/
 repo/
 install.py.before-*
 __pycache__/
+*.bak*

@@ -295,6 +295,21 @@ class DetailsView(QWidget):
             QPushButton:hover { background-color: #7dd3fc; }
         """)
         self.play_main_btn.clicked.connect(lambda: self.play_episode(self.active_ep))
+        self._lib_loading = False
+        self._lib_anime = None
+        self.lib_status = QComboBox()
+        self.lib_status.addItem("＋ Add to Library", "")
+        for _l, _k in (("Watching", "watching"), ("Plan to Watch", "plan_to_watch"),
+                       ("Watch Later", "watch_later"), ("Completed", "completed"),
+                       ("On Hold", "on_hold"), ("Dropped", "dropped")):
+            self.lib_status.addItem(_l, _k)
+        self.lib_status.currentIndexChanged.connect(self._lib_save)
+        self.lib_fav = QPushButton("♡ Favorite")
+        self.lib_fav.setCheckable(True)
+        self.lib_fav.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lib_fav.toggled.connect(self._lib_save)
+        ep_header.addWidget(self.lib_status)
+        ep_header.addWidget(self.lib_fav)
         ep_header.addWidget(self.play_main_btn)
         ep_card_layout.addLayout(ep_header)
 
@@ -364,7 +379,32 @@ class DetailsView(QWidget):
 
         self.content_layout.addWidget(self.rel_card)
 
+    def _lib_sync(self, anime):
+        from hayate import library_db as ldb
+        self._lib_anime = anime
+        r = ldb.get_entry(ldb.db(), anime.id)
+        self._lib_loading = True
+        self.lib_status.setCurrentIndex(max(self.lib_status.findData((r["status"] if r else None) or ""), 0))
+        self.lib_fav.setChecked(bool(r and r["favorite"]))
+        self.lib_fav.setText("♥ Favorited" if self.lib_fav.isChecked() else "♡ Favorite")
+        self._lib_loading = False
+
+    def _lib_save(self, *_):
+        a = self._lib_anime
+        if a is None or self._lib_loading:
+            return
+        from hayate import library_db as ldb
+        status = self.lib_status.currentData() or None
+        fav = self.lib_fav.isChecked()
+        self.lib_fav.setText("♥ Favorited" if fav else "♡ Favorite")
+        con = ldb.db()
+        if status is None and not fav:
+            ldb.remove_entry(con, a.id)
+        else:
+            ldb.put(con, a.id, a.title, a.cover_url, a.episodes, status, fav)
+
     def set_anime(self, anime: AnimeMedia):
+        self._lib_sync(anime)
         self.anime = anime
         self.active_ep = 1
         self.current_chunk = 0
