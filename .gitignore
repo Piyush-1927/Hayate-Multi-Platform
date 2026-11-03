@@ -77,3 +77,6 @@ repo/
 install.py.before-*
 __pycache__/
 *.bak*
+
+# local OAuth credentials
+src/hayate/core/google_secrets.py

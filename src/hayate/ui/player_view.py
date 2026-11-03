@@ -1,7 +1,9 @@
+from hayate.core.assets import ic as _ic
 import threading
 from PyQt6 import QtCore, QtWidgets, QtGui
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal, QPoint, QTimer
 from PyQt6.QtWidgets import (
+    QApplication,
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QFrame, QScrollArea, QListWidget, QListWidgetItem,
     QLineEdit, QComboBox, QSlider, QMessageBox, QProgressBar
@@ -9,6 +11,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtMultimedia import QMediaPlayer
 from hayate.core.playback_platform import detect_playback_platform
 from hayate.core.mpv_adapter import MpvPlayerAdapter
+from hayate.core.web_embed import WEB_OK, WebPane
+from hayate.ui.gl_video_surface import GLVideoSurface
 
 from hayate.core.anilist import AnimeMedia
 from hayate.core.player import PlayerController
@@ -45,7 +49,7 @@ class _NativeVideoSurface(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self.setMouseTracking(True)
-        self.setStyleSheet("background-color: black;")
+        self.setStyleSheet("background-color: #000000;")
 
     def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -69,12 +73,16 @@ class VideoOverlayWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMouseTracking(True)
-        self.setStyleSheet("background-color: black;")
+        self.setStyleSheet("background-color: #000000;")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.native_surface = _NativeVideoSurface(self)
+        self.native_surface = (
+            GLVideoSurface(self)
+            if detect_playback_platform().embedding == "gl"
+            else _NativeVideoSurface(self)
+        )
         self.native_surface.doubleClickedCenter.connect(
             self.doubleClickedCenter.emit
         )
@@ -84,7 +92,9 @@ class VideoOverlayWidget(QWidget):
 class FloatingControlBar(QtWidgets.QWidget):
     """Independent floating overlay bar for fullscreen mode."""
     def __init__(self, parent=None):
-        super().__init__(parent, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        super().__init__(parent, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint
+                         | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedHeight(64)
         self._build_ui()
@@ -115,7 +125,7 @@ class FloatingControlBar(QtWidgets.QWidget):
             }
             QSlider::groove:horizontal {
                 height: 5px;
-                background: #252538;
+                background: #3d3d5c;
                 border-radius: 2px;
             }
             QSlider::sub-page:horizontal {
@@ -136,18 +146,18 @@ class FloatingControlBar(QtWidgets.QWidget):
         card_layout.setContentsMargins(16, 8, 16, 8)
         card_layout.setSpacing(12)
 
-        self.btn_backward = QPushButton("⏪")
+        self.btn_backward = _ic(QPushButton(""), "rewind")
         self.btn_backward.setToolTip("Seek -10s")
         self.btn_backward.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_backward.setFixedSize(34, 34)
         card_layout.addWidget(self.btn_backward)
 
-        self.btn_play = QPushButton("▶")
+        self.btn_play = _ic(QPushButton(""), "play")
         self.btn_play.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_play.setFixedSize(36, 36)
         card_layout.addWidget(self.btn_play)
 
-        self.btn_forward = QPushButton("⏩")
+        self.btn_forward = _ic(QPushButton(""), "fast-forward")
         self.btn_forward.setToolTip("Seek +10s")
         self.btn_forward.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_forward.setFixedSize(34, 34)
@@ -164,7 +174,7 @@ class FloatingControlBar(QtWidgets.QWidget):
         self.seek_slider.setRange(0, 0)
         card_layout.addWidget(self.seek_slider, 1)
 
-        self.btn_mute = QPushButton("🔊")
+        self.btn_mute = _ic(QPushButton(""), "volume-2")
         self.btn_mute.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_mute.setFixedSize(36, 36)
         card_layout.addWidget(self.btn_mute)
@@ -176,13 +186,13 @@ class FloatingControlBar(QtWidgets.QWidget):
         self.vol_slider.setValue(100)
         card_layout.addWidget(self.vol_slider)
 
-        self.btn_settings = QPushButton("⚙")
+        self.btn_settings = _ic(QPushButton(""), "settings")
         self.btn_settings.setToolTip("Playback speed & captions")
         self.btn_settings.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_settings.setFixedSize(36, 36)
         card_layout.addWidget(self.btn_settings)
 
-        self.btn_fullscreen = QPushButton("⛶")
+        self.btn_fullscreen = _ic(QPushButton(""), "maximize")
         self.btn_fullscreen.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_fullscreen.setFixedSize(36, 36)
         card_layout.addWidget(self.btn_fullscreen)
@@ -228,6 +238,9 @@ class PlayerView(QWidget):
         # Floating bar for Fullscreen Mode
         self.floating_bar = FloatingControlBar(self)
         self.floating_bar.hide()
+        from PyQt6.QtGui import QGuiApplication
+        QGuiApplication.instance().applicationStateChanged.connect(
+            lambda st: st != Qt.ApplicationState.ApplicationActive and self._hide_floating_bar())
         self.is_bar_visible = False
         self._last_cursor_pos = QPoint()
 
@@ -266,13 +279,18 @@ class PlayerView(QWidget):
 
             # Force creation of the dedicated native child window before mpv starts.
             surface = self.video_widget.native_surface
-            surface.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
-            native_id = int(surface.winId())
+            is_gl = self._playback_platform.embedding == "gl"
+            if is_gl:
+                native_id = 0
+            else:
+                surface.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+                native_id = int(surface.winId())
 
             self.media_player = MpvPlayerAdapter(
                 platform=self._playback_platform,
                 native_id=native_id,
                 parent=self,
+                gl_widget=surface if is_gl else None,
             )
             self.audio_output = self.media_player.audio_output
 
@@ -297,7 +315,7 @@ class PlayerView(QWidget):
         top_bar.setContentsMargins(0, 0, 0, 0)
         top_bar.setSpacing(14)
 
-        self.btn_back = QPushButton("← Back to Details")
+        self.btn_back = _ic(QPushButton("Back to Details"), "arrow-left")
         self.btn_back.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_back.setFixedHeight(34)
         self.btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -356,7 +374,7 @@ class PlayerView(QWidget):
         self.jump_input = QLineEdit()
         self.jump_input.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.jump_input.setPlaceholderText("Jump #...")
-        self.jump_input.setFixedSize(70, 30)
+        self.jump_input.setFixedHeight(30); self.jump_input.setMinimumWidth(70)
         self.jump_input.setStyleSheet("""
             QLineEdit {
                 background-color: #242436;
@@ -368,7 +386,7 @@ class PlayerView(QWidget):
             }
         """)
         self.jump_input.returnPressed.connect(self._on_jump)
-        filter_bar.addWidget(self.jump_input)
+        filter_bar.addWidget(self.jump_input, 1)
 
         self.audio_combo = QComboBox()
         self.audio_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -384,10 +402,9 @@ class PlayerView(QWidget):
                 font-weight: 700;
             }
         """)
-        self.audio_combo.addItem("Sub (Original)", "sub")
-        self.audio_combo.addItem("Eng Dub", "dub_eng")
-        self.audio_combo.addItem("Hindi Dub", "dub_hin")
-        self.audio_combo.addItem("Any Dub", "any_dub")
+        from hayate.core.settings import audio_options
+        for _l, _d in audio_options():
+            self.audio_combo.addItem(_l, _d)
         self.audio_combo.currentIndexChanged.connect(self._on_audio_changed)
         filter_bar.addWidget(self.audio_combo)
 
@@ -401,7 +418,7 @@ class PlayerView(QWidget):
         _q = self._settings().get("playback_quality", "best")
         self.quality_combo.setCurrentIndex(max(self.quality_combo.findData(_q), 0))
         self.quality_combo.currentIndexChanged.connect(self._on_quality_changed)
-        filter_bar.addWidget(self.quality_combo)
+        self.quality_combo.setParent(self); self.quality_combo.hide()
         s_layout.addLayout(filter_bar)
 
         self.chunk_scroll = QScrollArea()
@@ -492,7 +509,7 @@ class PlayerView(QWidget):
             }
             QSlider::groove:horizontal {
                 height: 5px;
-                background: #252538;
+                background: #3d3d5c;
                 border-radius: 2px;
             }
             QSlider::sub-page:horizontal {
@@ -513,18 +530,18 @@ class PlayerView(QWidget):
         card_layout.setContentsMargins(14, 6, 14, 6)
         card_layout.setSpacing(10)
 
-        self.btn_backward_docked = QPushButton("⏪")
+        self.btn_backward_docked = _ic(QPushButton(""), "rewind")
         self.btn_backward_docked.setToolTip("Seek -10s")
         self.btn_backward_docked.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_backward_docked.setFixedSize(34, 34)
         card_layout.addWidget(self.btn_backward_docked)
 
-        self.btn_play_docked = QPushButton("▶")
+        self.btn_play_docked = _ic(QPushButton(""), "play")
         self.btn_play_docked.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_play_docked.setFixedSize(36, 36)
         card_layout.addWidget(self.btn_play_docked)
 
-        self.btn_forward_docked = QPushButton("⏩")
+        self.btn_forward_docked = _ic(QPushButton(""), "fast-forward")
         self.btn_forward_docked.setToolTip("Seek +10s")
         self.btn_forward_docked.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_forward_docked.setFixedSize(34, 34)
@@ -539,11 +556,12 @@ class PlayerView(QWidget):
         self.seek_slider_docked = QSlider(Qt.Orientation.Horizontal)
         self.seek_slider_docked.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.seek_slider_docked.setRange(0, 0)
+        self.seek_slider_docked.sliderMoved.connect(self._on_seek_moved)
         self.seek_slider_docked.sliderPressed.connect(self._on_seek_pressed)
         self.seek_slider_docked.sliderReleased.connect(self._on_seek_released)
         card_layout.addWidget(self.seek_slider_docked, 1)
 
-        self.btn_mute_docked = QPushButton("🔊")
+        self.btn_mute_docked = _ic(QPushButton(""), "volume-2")
         self.btn_mute_docked.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_mute_docked.setFixedSize(36, 36)
         card_layout.addWidget(self.btn_mute_docked)
@@ -556,13 +574,20 @@ class PlayerView(QWidget):
         self.vol_slider_docked.valueChanged.connect(self._on_volume_changed)
         card_layout.addWidget(self.vol_slider_docked)
 
-        self.btn_settings_docked = QPushButton("⚙")
+        self.btn_settings_docked = _ic(QPushButton(""), "settings")
         self.btn_settings_docked.setToolTip("Playback speed & captions")
         self.btn_settings_docked.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_settings_docked.setFixedSize(36, 36)
         card_layout.addWidget(self.btn_settings_docked)
 
-        self.btn_fullscreen_docked = QPushButton("⛶")
+        self.btn_comments_docked = QPushButton("💬")
+        self.btn_comments_docked.setToolTip("Comments (C)")
+        self.btn_comments_docked.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_comments_docked.setFixedSize(36, 36)
+        self.btn_comments_docked.clicked.connect(self._toggle_comments)
+        card_layout.addWidget(self.btn_comments_docked)
+
+        self.btn_fullscreen_docked = _ic(QPushButton(""), "maximize")
         self.btn_fullscreen_docked.setToolTip("Toggle Fullscreen")
         self.btn_fullscreen_docked.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_fullscreen_docked.setFixedSize(36, 36)
@@ -574,14 +599,72 @@ class PlayerView(QWidget):
 
     def _setup_shortcuts(self):
         ctx = Qt.ShortcutContext.WidgetWithChildrenShortcut
-        QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Space), self, self._toggle_play, context=ctx)
-        QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_F), self, self._toggle_fullscreen, context=ctx)
-        QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_F11), self, self._toggle_fullscreen, context=ctx)
+        QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Space), self, self._toggle_play, context=ctx).setAutoRepeat(False)
+        QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_F), self, self._toggle_fullscreen, context=ctx).setAutoRepeat(False)
+        QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_F11), self, self._toggle_fullscreen, context=ctx).setAutoRepeat(False)
+        QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_C), self, self._toggle_comments, context=ctx).setAutoRepeat(False)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Escape), self, self._exit_fullscreen_only, context=ctx)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Left), self, lambda: self._seek_relative(-5000), context=ctx)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Right), self, lambda: self._seek_relative(5000), context=ctx)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Up), self, lambda: self._adjust_volume(5), context=ctx)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Down), self, lambda: self._adjust_volume(-5), context=ctx)
+
+    def _init_media_controls(self, player):
+        from hayate.ui import media_controls
+        if getattr(self, "_mc", None) is None:
+            def seek_abs(us):
+                if self.media_player is not None:
+                    self.media_player.setPosition(max(0, int(us / 1000)))
+
+            def set_vol(v):
+                self.vol_slider_docked.setValue(int(round(min(1.0, v) * 100)))
+
+            def step(d):
+                if not self.anime:
+                    return
+                ep = self.active_ep + d
+                if 1 <= ep <= max(1, self.anime.episodes):
+                    self.play_episode(ep)
+
+            self._mc = media_controls.create({
+                "play": lambda: self.media_player and self.media_player.play(),
+                "pause": lambda: self.media_player and self.media_player.pause(),
+                "toggle": self._toggle_play,
+                "stop": lambda: self.media_player and self.media_player.pause(),
+                "next": lambda: step(1),
+                "prev": lambda: step(-1),
+                "seek_rel": lambda us: self._seek_relative(int(us / 1000)),
+                "seek_abs": seek_abs,
+                "volume": set_vol,
+            }, position_fn=lambda: (self.media_player.position() * 1000) if self.media_player else 0,
+                name="hayate", parent=self)
+            QApplication.instance().aboutToQuit.connect(self._shutdown_media_controls)
+
+        P = QMediaPlayer.PlaybackState
+
+        def sync_meta(length_ms=None):
+            mc = getattr(self, "_mc", None)
+            if not mc or not self.anime:
+                return
+            total = max(1, self.anime.episodes)
+            mc.update(title=f"{self.anime.title} \u2014 EP {self.active_ep}",
+                      length_us=None if length_ms is None else int(length_ms) * 1000,
+                      can_next=self.active_ep < total, can_prev=self.active_ep > 1)
+
+        def on_state(st):
+            mc = getattr(self, "_mc", None)
+            if mc:
+                mc.update(status="Playing" if st == P.PlayingState
+                          else "Paused" if st == P.PausedState else "Stopped")
+
+        player.playbackStateChanged.connect(on_state)
+        player.durationChanged.connect(sync_meta)
+
+    def _shutdown_media_controls(self):
+        mc = getattr(self, "_mc", None)
+        if mc:
+            self._mc = None
+            mc.shutdown()
 
     def _connect_player_signals(self):
         """Connect signals belonging to the current playback adapter."""
@@ -591,7 +674,9 @@ class PlayerView(QWidget):
         player.positionChanged.connect(self._on_position_changed)
         player.durationChanged.connect(self._on_duration_changed)
         player.playbackStateChanged.connect(self._on_playback_state_changed)
+        player.endReached.connect(self._on_episode_end)
         player.errorOccurred.connect(self._on_stream_error)
+        self._init_media_controls(player)
 
     def _connect_signals(self):
         self._connect_player_signals()
@@ -611,6 +696,7 @@ class PlayerView(QWidget):
         self.btn_mute_docked.clicked.connect(self._toggle_mute)
         self.btn_fullscreen_docked.clicked.connect(self._toggle_fullscreen)
         self.btn_settings_docked.clicked.connect(lambda: self._open_player_menu(self.btn_settings_docked))
+        self.floating_bar.seek_slider.sliderMoved.connect(self._on_seek_moved)
         self.floating_bar.seek_slider.sliderPressed.connect(self._on_seek_pressed)
         self.floating_bar.seek_slider.sliderReleased.connect(self._on_seek_released)
         self.floating_bar.vol_slider.valueChanged.connect(self._on_volume_changed)
@@ -655,12 +741,23 @@ class PlayerView(QWidget):
                     if not self.hide_timer.isActive():
                         self.hide_timer.start()
 
+    def _toggle_comments(self):
+        from hayate.ui.comments_card import CommentsCard
+        c = getattr(self, "_comments_card", None)
+        if c is None:
+            c = self._comments_card = CommentsCard(
+                self.video_widget, detect_playback_platform().embedding == "gl")
+        c.set_media(self.anime.id if self.anime else None)
+        c.toggle()
+
     def _show_floating_bar(self, screen_geom):
         w = self.window()
-        if not w.isFullScreen() or self.is_bar_visible:
+        from PyQt6.QtGui import QGuiApplication
+        if (not w.isFullScreen() or self.is_bar_visible
+                or QGuiApplication.applicationState() != Qt.ApplicationState.ApplicationActive):
             return
         self.is_bar_visible = True
-        bar_w = min(1150, screen_geom.width() - 60)
+        bar_w = min(1500, int(screen_geom.width() * 0.85))
         bar_h = 64
         x = screen_geom.x() + (screen_geom.width() - bar_w) // 2
         y = screen_geom.bottom() - bar_h - 24
@@ -671,6 +768,12 @@ class PlayerView(QWidget):
         self.hide_timer.start()
 
     def _hide_floating_bar(self):
+        from PyQt6.QtGui import QCursor, QGuiApplication
+        if (self.is_bar_visible
+                and QGuiApplication.applicationState() == Qt.ApplicationState.ApplicationActive
+                and self.floating_bar.geometry().contains(QCursor.pos())):
+            self.hide_timer.start()  # cursor is on the pill: keep it
+            return
         w = self.window()
         if not w.isFullScreen() or not self.is_bar_visible:
             return
@@ -684,9 +787,15 @@ class PlayerView(QWidget):
         mp = self.media_player
         menu = QMenu(self)
         menu.setStyleSheet(
-            "QMenu{background:#0f172a;color:#e2e8f0;border:1px solid #334155;padding:4px;}"
-            "QMenu::item{padding:6px 18px;}QMenu::item:selected{background:#1e293b;}"
+            "QMenu{background:#1e1e2d;color:#e2e8f0;border:1px solid #3d3d52;padding:4px;}"
+            "QMenu::item{padding:6px 18px;}QMenu::item:selected{background:#2d2d42;}"
             "QMenu::item:disabled{color:#64748b;}")
+        qm = menu.addMenu("Quality")
+        for _i in range(self.quality_combo.count()):
+            _a = qm.addAction(self.quality_combo.itemText(_i)); _a.setCheckable(True)
+            _a.setChecked(_i == self.quality_combo.currentIndex())
+            _a.triggered.connect(lambda _c, i=_i: self.quality_combo.setCurrentIndex(i))
+        menu.addSeparator()
 
         cur = round(float(getattr(mp, "speed", lambda: 1.0)()), 2)
         sp = menu.addMenu("Playback speed")
@@ -726,7 +835,8 @@ class PlayerView(QWidget):
             self.hide_timer.stop()
             self.cursor_idle_timer.stop()
             self.unsetCursor()
-            self._hide_floating_bar()
+            self.is_bar_visible = False
+            self.floating_bar.hide()
 
             self.top_bar_widget.setVisible(True)
             self.sidebar.setVisible(True)
@@ -755,6 +865,12 @@ class PlayerView(QWidget):
             self.cursor_idle_timer.start()
 
     def open_anime(self, anime: AnimeMedia, ep: int):
+        if __import__("os").environ.get("HAYATE_MPV_TIMING") == "1":
+            print(
+                f"[Hayate timing] open_anime "
+                f"view={id(self)} ep={ep} title={anime.title!r}",
+                flush=True,
+            )
         # Recreate libmpv after a previous session was shut down.
         if self._playback_shutdown:
             self._playback_shutdown = False
@@ -776,6 +892,7 @@ class PlayerView(QWidget):
 
         _st = _ls()
 
+        self._reload_audio_items()
         pref_audio = _st.get("anime_audio_overrides", {}).get(str(anime.id)) or _st.get("preferred_audio", "sub")
         f_idx = self.audio_combo.findData(pref_audio)
         if f_idx >= 0:
@@ -845,6 +962,16 @@ class PlayerView(QWidget):
             self.play_episode(ep)
         self.setFocus()
 
+    def _reload_audio_items(self):
+        from hayate.core.settings import audio_options
+        cur = self.audio_combo.currentData()
+        self.audio_combo.blockSignals(True)
+        self.audio_combo.clear()
+        for label, data in audio_options():
+            self.audio_combo.addItem(label, data)
+        self.audio_combo.setCurrentIndex(max(self.audio_combo.findData(cur), 0))
+        self.audio_combo.blockSignals(False)
+
     def _on_audio_changed(self, idx: int):
         if not self.anime:
             return
@@ -878,11 +1005,23 @@ class PlayerView(QWidget):
     def play_episode(self, ep: int):
         if not self.anime:
             return
+        if __import__("os").environ.get("HAYATE_MPV_TIMING") == "1":
+            print(
+                f"[Hayate timing] play_episode "
+                f"view={id(self)} ep={ep} title={self.anime.title!r}",
+                flush=True,
+            )
         if self.media_player is None:
             self._on_stream_error(
                 self._playback_error or "The playback engine is unavailable."
             )
             return
+        import time as _t
+        _key, _now = (self.anime.id, ep), _t.monotonic()
+        _last = getattr(self, "_last_play", None)
+        if _last and _last[0] == _key and _now - _last[1] < 1.5:
+            return  # duplicate request for the same episode (double signal)
+        self._last_play = (_key, _now)
         self.active_ep = ep
         self.title_lbl.setText(f"{self.anime.title}  —  EP {ep}")
         self.progress_bar.setVisible(True)
@@ -914,7 +1053,7 @@ class PlayerView(QWidget):
                 self._stream_failed.emit(f"Stream source failed: {e}")
                 return
             if not stream or not stream.url:
-                self._stream_failed.emit(f"Episode {ep} not available on this provider.")
+                self._stream_failed.emit(getattr(provider, "last_notice", "") or f"Episode {ep} not available on this provider.")
                 return
             if not hasattr(self, "_stream_by_url"):
                 self._stream_by_url = {}
@@ -925,6 +1064,10 @@ class PlayerView(QWidget):
 
     def _on_stream_ready(self, anime, ep: int, url: str):
         self.progress_bar.setVisible(False)
+        if url.startswith("web://"):
+            self._show_web(url[6:])
+            return
+        self._hide_web()
         if self.media_player is None:
             self._on_stream_error(
                 self._playback_error or "The playback engine is unavailable."
@@ -932,7 +1075,7 @@ class PlayerView(QWidget):
             return
 
         self.placeholder_label.hide()
-        st = getattr(self, "_stream_by_url", {}).pop(url, None)
+        st = getattr(self, "_stream_by_url", {}).get(url)
         self.media_player.setSource(
             QUrl(url),
             getattr(st, "referer", ""),
@@ -955,6 +1098,44 @@ class PlayerView(QWidget):
             banner_url=anime.banner_url,
             total_episodes=anime.episodes,
         )
+        self._cloud_sync()
+
+    def _show_web(self, target):
+        if not WEB_OK:
+            self._on_stream_error("Web player unavailable (QtWebEngine or Widevine CDM missing).")
+            return
+        try:
+            pm = self.media_player
+            if pm is not None and hasattr(pm, "pause"):
+                pm.pause()
+            if getattr(self, "_web", None) is None:
+                self._web = WebPane(self)
+                self.video_widget.layout().addWidget(self._web)
+            self.video_widget.native_surface.hide()
+            self.placeholder_label.hide()
+            self._web.show()
+            self._web.open(target)
+        except Exception as exc:
+            self._on_stream_error(f"Web player failed: {exc}")
+
+    def _hide_web(self):
+        w = getattr(self, "_web", None)
+        if w is not None and w.isVisible():
+            w.open("about:blank")
+            w.hide()
+            self.video_widget.native_surface.show()
+
+    def _on_episode_end(self):
+        history_mgr.flush()
+        self._cloud_sync()
+
+    def _cloud_sync(self):
+        try:
+            from hayate.core import cloud
+            cloud.autosync()
+        except Exception:
+            import logging
+            logging.exception("cloud sync")
 
     def _hook_progress(self):
         if getattr(self, "_progress_hooked", False) or self.media_player is None:
@@ -984,11 +1165,16 @@ class PlayerView(QWidget):
         self.skip_btn.setFixedHeight(40)
         self.skip_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.skip_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.skip_btn.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
-                                     | Qt.WindowType.WindowStaysOnTopHint
-                                     | Qt.WindowType.WindowDoesNotAcceptFocus)
-        self.skip_btn.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.skip_btn.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self._skip_in_video = detect_playback_platform().embedding == "gl"
+        if self._skip_in_video:
+            # GL video is a normal widget: overlay as a child, not a top-level window.
+            self.skip_btn.setParent(self.video_widget)
+        else:
+            self.skip_btn.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                                         | Qt.WindowType.WindowStaysOnTopHint
+                                         | Qt.WindowType.WindowDoesNotAcceptFocus)
+            self.skip_btn.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            self.skip_btn.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.skip_btn.clicked.connect(self._do_skip)
         self.skip_btn.hide()
         self._style_skip_btn()
@@ -1030,14 +1216,22 @@ class PlayerView(QWidget):
             self.skip_btn.setFixedHeight(40)
         vc = self.findChild(VideoOverlayWidget)
         if vc is not None:
-            br = vc.mapToGlobal(QPoint(vc.width(), vc.height()))
             lift = 110 if self.window().isFullScreen() else 28
-            self.skip_btn.move(br.x() - self.skip_btn.width() - 32,
-                               br.y() - self.skip_btn.height() - lift)
-        self.skip_btn.show()
-        self.skip_btn.raise_()
+            if getattr(self, "_skip_in_video", False):
+                self.skip_btn.move(vc.width() - self.skip_btn.width() - 32,
+                                   vc.height() - self.skip_btn.height() - lift)
+            else:
+                br = vc.mapToGlobal(QPoint(vc.width(), vc.height()))
+                self.skip_btn.move(br.x() - self.skip_btn.width() - 32,
+                                   br.y() - self.skip_btn.height() - lift)
+        if not self.skip_btn.isVisible():
+            self.skip_btn.show()
+            self.skip_btn.raise_()
 
     def hideEvent(self, event):
+        c = getattr(self, "_comments_card", None)
+        if c is not None:
+            c.close_card()
         if hasattr(self, "skip_btn"):
             self._skip_kind = None
             self.skip_btn.hide()
@@ -1081,7 +1275,34 @@ class PlayerView(QWidget):
         )
         self.media_player.setPosition(new_pos)
 
+    def _seek_pending(self, pos):
+        """True while dragging or while a released seek hasn't landed yet."""
+        if self.is_slider_pressed:
+            return True
+        tgt = getattr(self, "_seek_target", None)
+        if tgt is None:
+            return False
+        from time import monotonic
+        if abs(pos - tgt) <= 2500 or monotonic() - self._seek_t0 > 4.0:
+            self._seek_target = None
+            return False
+        return True
+
+    def _sync_seek_ui(self, pos):
+        for sl in (self.seek_slider_docked, self.floating_bar.seek_slider):
+            if sl.value() != pos:
+                sl.blockSignals(True)
+                sl.setValue(pos)
+                sl.blockSignals(False)
+        if self.media_player is not None:
+            self._update_time_label(pos, self.media_player.duration())
+
+    def _on_seek_moved(self, pos):
+        self._sync_seek_ui(pos)
+        # scrub-hook
+
     def _on_seek_pressed(self):
+        self._seek_target = None
         self.is_slider_pressed = True
 
     def _on_seek_released(self):
@@ -1091,9 +1312,17 @@ class PlayerView(QWidget):
         target_pos = self.seek_slider_docked.value()
         if self.is_bar_visible:
             target_pos = self.floating_bar.seek_slider.value()
+        from time import monotonic
+        self._seek_target, self._seek_t0 = target_pos, monotonic()
+        st = getattr(self, "_scrub_timer", None)
+        if st is not None:
+            st.stop()
+        self._sync_seek_ui(target_pos)
         self.media_player.setPosition(target_pos)
 
     def _on_position_changed(self, pos: int):
+        if self._seek_pending(pos):
+            return
         if not self.is_slider_pressed:
             self.seek_slider_docked.setValue(pos)
             self.floating_bar.seek_slider.setValue(pos)
@@ -1145,6 +1374,8 @@ class PlayerView(QWidget):
         if w.isFullScreen():
             self._toggle_fullscreen()
         self._shutdown_playback()
+        history_mgr.flush()
+        self._cloud_sync()
         self.back_requested.emit()
 
     def _shutdown_playback(self):
@@ -1152,6 +1383,7 @@ class PlayerView(QWidget):
             return
 
         self._playback_shutdown = True
+        self._hide_web()
         player = self.media_player
         self.media_player = None
         self.audio_output = None
@@ -1164,5 +1396,6 @@ class PlayerView(QWidget):
                 logging.exception("Error while shutting down playback")
 
     def closeEvent(self, event):
+        self._shutdown_media_controls()
         self._shutdown_playback()
         super().closeEvent(event)
