@@ -1,6 +1,8 @@
 """Optional embedded web player (QtWebEngine + Widevine). WEB_OK is False when unavailable."""
 import glob, os, re
 
+CRAWL = bool(os.environ.get("HAYATE_CRAWL"))
+
 WEB_OK = False
 WebPane = None
 _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -79,6 +81,11 @@ if WEB_OK:
                 if msg.startswith("[hayate] season"):
                     from PyQt6.QtCore import QTimer
                     QTimer.singleShot(1000, self.parent()._press_ep)
+                if msg.startswith("[hayate] cr map "):
+                    self.parent()._cr_got(msg[len("[hayate] cr map "):])
+                if self.parent()._cr_active and (msg.startswith("[hayate] no episode") or " not found" in msg):
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(500, self.parent()._cr_next)
                 if msg.startswith("[hayate] episode card"):
                     self.parent()._ep_clicked = True
                 if msg.startswith("[hayate] lang"):
@@ -153,7 +160,7 @@ if WEB_OK:
             from urllib.parse import unquote
             url, _, lang = url.partition("#hayate_lang=")
             self._lang = unquote(lang)
-            url = url if "/watch" in url else _show_root(url)
+            url = url if ("/watch" in url and not CRAWL) else _show_root(url)
             self._ep = ep
             self._season = _season_for(key)
             self._target, self._retry, self._onboarding = url, True, False
@@ -162,16 +169,33 @@ if WEB_OK:
             self._q = (parse_qs(urlparse(url).query).get("q") or [""])[0]
             self._ek = f"{key}|{ep}|{self._lang}"
             self._ep_clicked = False
-            direct = url if "/watch" in url else _direct_ep(self._ek)
+            direct = url if "/watch" in url else ("" if CRAWL else _direct_ep(self._ek))
             if direct:
                 print("[web] direct episode", direct, flush=True)
                 self._target, self._autoplay, self._lang, self._season, self._q = direct, False, "", 0, ""
                 url = direct
+                self._advance()
             self.load(QUrl(url))
 
         _autoplay = False
         _ek = ""
         _ep_clicked = False
+        _cr_active = False
+        _cr_targets = None
+        _cr_seen = None
+        _cr_root = ""
+        _cr_token = 0
+
+        def _advance(self):
+            from PyQt6.QtCore import QTimer
+            if self._cr_active:
+                QTimer.singleShot(1500, self._cr_next)
+                return
+            mx = int(os.environ.get("HAYATE_MAP_TO", "0") or 0)
+            if mx and self._ep < mx:
+                n = self._ep + 1
+                print("[web] mapping: next episode", n, flush=True)
+                QTimer.singleShot(1500, lambda: self._owner.play_episode(n))
 
         def _learn(self, s):
             import json, os, re
@@ -188,6 +212,7 @@ if WEB_OK:
                     json.dump(em, open(ef, "w"), indent=1)
                     print("[web] saved episode", self._ek, "->", s, flush=True)
                 self._ep_clicked = False
+                self._advance()
             f = os.path.expanduser("~/.config/hayate/webplayer/urls.json")
             try:
                 m = json.load(open(f))
@@ -266,7 +291,91 @@ if WEB_OK:
             },300);})(SEASONNUM);""".replace("SEASONNUM", str(n))
             self.page().runJavaScript(js)
 
+        def _cr_discover(self):
+            print("[web] crawl: scanning seasons of", self._cr_root, flush=True)
+            self.page().runJavaScript(r"""(function(){
+ var acc={};
+ function vis(e){return e.offsetParent!==null;}
+ function tabs(){var o={};[].slice.call(document.querySelectorAll('button,a,li,div,span,[role=tab],[role=button]')).forEach(function(e){
+   if(!vis(e))return;var m=(e.innerText||'').trim().match(/^season\s*(\d+)$/i);if(m&&!o[m[1]])o[m[1]]=e;});return o;}
+ function scan(sn){var n=0,last=null;[].slice.call(document.querySelectorAll('a,button,[role=button],li,div')).forEach(function(e){
+   var x=(e.innerText||'').trim();if(!x||x.length>140||/^\s*(resume|watch|play|continue|start)/i.test(x))return;
+   var m=x.match(/\bS\s*(\d+)\s*E\s*(\d+)\b/i);if(!m)return;var s=+m[1],ep=+m[2];if(sn&&s!==sn)return;
+   (acc[s]=acc[s]||{})[ep]=1;n++;last=e;});return {n:n,last:last};}
+ function settle(sn,cb){var prev=-1,same=0,k=0;(function st(){var r=scan(sn);var c=0;
+   for(var s in acc)c+=Object.keys(acc[s]).length;
+   if(r.last)r.last.scrollIntoView({block:'end'});
+   if(c===prev)same++;else same=0;prev=c;
+   if(same>=2||++k>15){cb();return;}setTimeout(st,500);})();}
+ function done(){var o={};for(var s in acc)o[s]=Object.keys(acc[s]).map(Number).sort(function(a,b){return a-b;});
+   console.log('[hayate] cr map '+JSON.stringify(o));}
+ function go(){var T=tabs(),ss=Object.keys(T).map(Number).sort(function(a,b){return a-b;}),i=0;
+   if(!ss.length){settle(0,done);return;}
+   (function nx(){if(i>=ss.length){done();return;}var sn=ss[i++],e=tabs()[sn];if(!e){nx();return;}
+     (e.closest('button,[role=button],[role=tab],li')||e).click();
+     setTimeout(function(){settle(sn,nx);},1200);})();}
+ var w=0;(function wait(){if(Object.keys(tabs()).length||scan(0).n||++w>25){go();return;}setTimeout(wait,300);})();
+})();""")
+
+        def _cr_got(self, payload):
+            import json
+            try:
+                m = json.loads(payload)
+            except ValueError:
+                print("[web] crawl: could not read season map", flush=True)
+                return
+            ef = os.path.expanduser("~/.config/hayate/webplayer/episodes.json")
+            try:
+                done = json.load(open(ef))
+            except (OSError, ValueError):
+                done = {}
+            lang = (self._lang or "default").replace(" ", "+")
+            self._cr_targets = []
+            for sn, eps in sorted(m.items(), key=lambda kv: int(kv[0])):
+                for e in eps:
+                    k = f"@{self._cr_root}|S{sn}|E{e}|{lang}"
+                    if k not in done:
+                        self._cr_targets.append((int(sn), int(e), k))
+            print(f"[web] crawl: {sum(len(v) for v in m.values())} episodes found, "
+                  f"{len(self._cr_targets)} to map", flush=True)
+            self._cr_active = True
+            self._cr_next()
+
+        def _cr_next(self):
+            from PyQt6.QtCore import QTimer, QUrl
+            if not self._cr_targets:
+                self._cr_active = False
+                print("[web] crawl: finished", self._cr_root, flush=True)
+                return
+            sn, e, k = self._cr_targets.pop(0)
+            self._ek, self._season, self._ep, self._ep_clicked = k, sn, e, False
+            self._autoplay, self._onboarding, self._retry = True, False, False
+            self._cr_token += 1
+            tok = self._cr_token
+            QTimer.singleShot(45000, lambda: self._cr_timeout(tok, sn, e))
+            print(f"[web] crawl: S{sn} E{e}", flush=True)
+            if _show_root(self.url().toString()) == self._cr_root:
+                self.load(QUrl("about:blank"))
+                QTimer.singleShot(400, lambda: self.load(QUrl(self._cr_root)) if tok == self._cr_token else None)
+            else:
+                self.load(QUrl(self._cr_root))
+
+        def _cr_timeout(self, tok, sn, e):
+            if self._cr_active and tok == self._cr_token:
+                print(f"[web] crawl: timeout on S{sn} E{e}, skipping", flush=True)
+                self._cr_next()
+
         def _press_ep(self):
+            if CRAWL and not self._cr_active:
+                root = _show_root(self.url().toString())
+                if "/shows/" in root:
+                    if self._cr_seen is None:
+                        self._cr_seen = set()
+                    if root not in self._cr_seen:
+                        self._cr_seen.add(root)
+                        self._cr_root = root
+                        self._cr_discover()
+                        return
             ep = int(getattr(self, "_ep", 1) or 1)
             sn = int(getattr(self, "_season", 0) or 0)
             js = r"""(function(want,sn){var n=0,t=setInterval(function(){
