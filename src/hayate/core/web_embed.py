@@ -92,6 +92,9 @@ if WEB_OK:
                 if msg.startswith("[hayate] lang ") and msg.endswith(" not found") and not self.parent()._cr_active and self.parent()._cr_langs is not None:
                     from PyQt6.QtCore import QTimer
                     QTimer.singleShot(500, lambda t=self.parent()._cr_token: self.parent()._cr_next_lang(t))
+                if msg.startswith("[hayate] lang ") and msg.endswith(" not found") and self.parent()._pending_watch:
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(300, self.parent()._go_pending)
                 if msg.startswith("[hayate] episode card"):
                     self.parent()._ep_clicked = True
                 if msg.startswith("[hayate] lang"):
@@ -176,10 +179,20 @@ if WEB_OK:
             self._ek = f"{key}|{ep}|{self._lang}"
             self._ep_clicked = False
             direct = url if "/watch" in url else ("" if CRAWL else _direct_ep(self._ek))
+            self._pending_watch = ""
             if direct:
-                print("[web] direct episode", direct, flush=True)
-                self._target, self._autoplay, self._lang, self._season, self._q = direct, False, "", 0, ""
-                url = direct
+                print("[web] direct episode", direct, "lang", repr(self._lang), flush=True)
+                if self._lang and not CRAWL:
+                    from PyQt6.QtCore import QTimer
+                    self._pending_watch = direct
+                    url = _show_root(direct)
+                    self._target, self._autoplay, self._season, self._q = url, True, 0, ""
+                    self._pw_tok += 1
+                    tok = self._pw_tok
+                    QTimer.singleShot(30000, lambda: self._go_pending(tok))
+                else:
+                    self._target, self._autoplay, self._lang, self._season, self._q = direct, False, "", 0, ""
+                    url = direct
                 self._advance()
             self.load(QUrl(url))
 
@@ -192,6 +205,8 @@ if WEB_OK:
         _cr_root = ""
         _cr_token = 0
         _cr_langs = None
+        _pending_watch = ""
+        _pw_tok = 0
 
         def _advance(self):
             from PyQt6.QtCore import QTimer
@@ -263,7 +278,7 @@ if WEB_OK:
             print("[web] real click", x, y, flush=True)
 
         def _press_play(self):
-            lang = getattr(self, "_lang", "")
+            lang = getattr(self, "_lang", "").replace("+", " ")
             if not lang:
                 self._press_season()
                 return
@@ -278,7 +293,21 @@ if WEB_OK:
             },300);})(LANG);""".replace("LANG", json.dumps(lang))
             self.page().runJavaScript(js)
 
+        def _go_pending(self, tok=None):
+            from PyQt6.QtCore import QUrl
+            pw = self._pending_watch
+            if not pw or (tok is not None and tok != self._pw_tok):
+                return
+            self._pending_watch = ""
+            self._target = pw
+            print("[web] opening cached episode", pw, flush=True)
+            self.load(QUrl(pw))
+
         def _press_season(self):
+            if self._pending_watch:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(1200, self._go_pending)
+                return
             n = int(getattr(self, "_season", 0) or 0)
             if not n:
                 self._press_ep()
