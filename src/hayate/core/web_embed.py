@@ -302,8 +302,13 @@ if WEB_OK:
    var x=(e.innerText||'').trim();if(!x||x.length>140||/^\s*(resume|watch|play|continue|start)/i.test(x))return;
    var m=x.match(/\bS\s*(\d+)\s*E\s*(\d+)\b/i);if(!m)return;var s=+m[1],ep=+m[2];if(sn&&s!==sn)return;
    (acc[s]=acc[s]||{})[ep]=1;n++;last=e;});return {n:n,last:last};}
+ var mc=0;
+ function more(){if(mc>40)return null;var l=[].slice.call(document.querySelectorAll('button,a,[role=button],div,span'));
+   for(var i=0;i<l.length;i++){var e=l[i];if(!vis(e))continue;var x=(e.innerText||'').trim();
+     if(x.length<30&&/^(show|view|load|see)\s*(more|all)/i.test(x)){mc++;return e;}}return null;}
  function settle(sn,cb){var prev=-1,same=0,k=0;(function st(){var r=scan(sn);var c=0;
    for(var s in acc)c+=Object.keys(acc[s]).length;
+   var mb=more();if(mb){mb.scrollIntoView({block:'center'});mb.click();same=0;prev=-1;setTimeout(st,800);return;}
    if(r.last)r.last.scrollIntoView({block:'end'});
    if(c===prev)same++;else same=0;prev=c;
    if(same>=2||++k>15){cb();return;}setTimeout(st,500);})();}
