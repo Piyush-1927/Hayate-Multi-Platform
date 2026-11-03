@@ -86,6 +86,9 @@ if WEB_OK:
                 if self.parent()._cr_active and (msg.startswith("[hayate] no episode") or " not found" in msg):
                     from PyQt6.QtCore import QTimer
                     QTimer.singleShot(500, self.parent()._cr_next)
+                if msg.startswith("[hayate] more click "):
+                    x, y = (int(v) for v in msg.split("click ", 1)[1].split()[:2])
+                    self.parent()._real_click(x, y)
                 if msg.startswith("[hayate] episode card"):
                     self.parent()._ep_clicked = True
                 if msg.startswith("[hayate] lang"):
@@ -308,7 +311,7 @@ if WEB_OK:
      if(x.length<30&&/^(show|view|load|see)\s*(more|all)/i.test(x)){mc++;return e;}}return null;}
  function settle(sn,cb){var prev=-1,same=0,k=0;(function st(){var r=scan(sn);var c=0;
    for(var s in acc)c+=Object.keys(acc[s]).length;
-   var mb=more();if(mb){mb.scrollIntoView({block:'center'});mb.click();same=0;prev=-1;setTimeout(st,800);return;}
+   console.log('[hayate] cr scan '+c+' mc='+mc);var mb=more();if(mb){mb.scrollIntoView({block:'center'});mb.click();same=0;prev=-1;setTimeout(st,800);return;}
    if(r.last)r.last.scrollIntoView({block:'end'});
    if(c===prev)same++;else same=0;prev=c;
    if(same>=2||++k>15){cb();return;}setTimeout(st,500);})();}
@@ -404,7 +407,7 @@ if WEB_OK:
                 return;}
               if(n%3===2){var mb=[].slice.call(document.querySelectorAll('button,a,[role=button],div,span')).filter(function(e){
                 var x=(e.innerText||'').trim();return e.offsetParent!==null&&x.length<30&&/^(show|view|load|see)\s*(more|all)/i.test(x);})[0];
-                if(mb){mb.scrollIntoView({block:'center'});mb.click();}}
+                if(mb){mb.scrollIntoView({block:'center'});setTimeout(function(){var r=mb.getBoundingClientRect();console.log('[hayate] more click '+Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2));},300);}}
               if(++n>60){clearInterval(t);
                 var sm=[].slice.call(document.querySelectorAll('a,button,li,div')).map(function(e){
                   return (e.innerText||'').trim().replace(/\s+/g,' ');}).filter(function(x){
