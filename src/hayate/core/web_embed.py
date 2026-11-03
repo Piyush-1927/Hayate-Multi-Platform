@@ -89,6 +89,9 @@ if WEB_OK:
                 if msg.startswith("[hayate] more click "):
                     x, y = (int(v) for v in msg.split("click ", 1)[1].split()[:2])
                     self.parent()._real_click(x, y)
+                if msg.startswith("[hayate] lang ") and msg.endswith(" not found") and not self.parent()._cr_active and self.parent()._cr_langs is not None:
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(500, lambda t=self.parent()._cr_token: self.parent()._cr_next_lang(t))
                 if msg.startswith("[hayate] episode card"):
                     self.parent()._ep_clicked = True
                 if msg.startswith("[hayate] lang"):
@@ -188,6 +191,7 @@ if WEB_OK:
         _cr_seen = None
         _cr_root = ""
         _cr_token = 0
+        _cr_langs = None
 
         def _advance(self):
             from PyQt6.QtCore import QTimer
@@ -295,7 +299,11 @@ if WEB_OK:
             self.page().runJavaScript(js)
 
         def _cr_discover(self):
-            print("[web] crawl: scanning seasons of", self._cr_root, flush=True)
+            if self._cr_langs is None:
+                order = [x.strip() for x in os.environ.get("HAYATE_CRAWL_LANGS", "Hindi,English,Japanese Original").split(",") if x.strip()]
+                cur = (self._lang or "").lower()
+                self._cr_langs = [x for x in order if x.lower() != cur]
+            print("[web] crawl: scanning seasons of", self._cr_root, self._lang, flush=True)
             self.page().runJavaScript(r"""(function(){
  var acc={};
  function vis(e){return e.offsetParent!==null;}
@@ -349,11 +357,33 @@ if WEB_OK:
             self._cr_active = True
             self._cr_next()
 
+        def _cr_next_lang(self, tok=None):
+            from PyQt6.QtCore import QTimer, QUrl
+            if tok is not None and tok != self._cr_token:
+                return
+            if self._cr_langs is None:
+                return
+            if not self._cr_langs:
+                print("[web] crawl: all languages done", flush=True)
+                self._cr_langs = None
+                return
+            self._lang = self._cr_langs.pop(0)
+            print("[web] crawl: language", self._lang, flush=True)
+            root = self._cr_root
+            (self._cr_seen or set()).discard(root)
+            self._cr_active = False
+            self._ek, self._ep_clicked = "", False
+            self._autoplay, self._onboarding, self._retry = True, False, False
+            self._cr_token += 1
+            self.load(QUrl("about:blank"))
+            QTimer.singleShot(400, lambda: self.load(QUrl(root)))
+
         def _cr_next(self):
             from PyQt6.QtCore import QTimer, QUrl
             if not self._cr_targets:
                 self._cr_active = False
-                print("[web] crawl: finished", self._cr_root, flush=True)
+                print("[web] crawl: finished", self._cr_root, self._lang, flush=True)
+                self._cr_next_lang()
                 return
             sn, e, k = self._cr_targets.pop(0)
             self._ek, self._season, self._ep, self._ep_clicked = k, sn, e, False
