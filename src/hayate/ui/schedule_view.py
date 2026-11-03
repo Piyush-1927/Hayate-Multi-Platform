@@ -1,3 +1,4 @@
+from hayate.core.assets import ic as _ic
 import datetime
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -17,6 +18,9 @@ from PyQt6.QtCore import (QVariantAnimation, QPropertyAnimation, QEasingCurve,
                           QEvent, QRect, QRectF, QPoint, QTimer)
 from PyQt6.QtGui import QPainter, QPen, QColor
 from PyQt6.QtWidgets import QWidget, QGraphicsOpacityEffect
+
+
+from hayate.core.theme import theme
 
 
 class _HoverAura(QWidget):
@@ -82,7 +86,7 @@ class _HoverAura(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(QColor("#38bdf8"), 1.5))
+        p.setPen(QPen(theme.c("accent"), 1.5))
         p.drawRoundedRect(QRectF(self.rect()).adjusted(0.75, 0.75, -0.75, -0.75), 8, 8)
 
 
@@ -145,7 +149,7 @@ class ScheduleView(QWidget):
         header = QHBoxLayout()
         header.setSpacing(14)
 
-        back_btn = QPushButton("← Back")
+        back_btn = _ic(QPushButton("Back"), "arrow-left")
         back_btn.setFixedHeight(36)
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         back_btn.setStyleSheet("""
@@ -391,24 +395,19 @@ class ScheduleView(QWidget):
         if name in self._checking:
             return
 
-        airings = {}
-        for entries in self.raw_data.values():
-            for a in entries:
-                airings.setdefault(a.get("id"), []).append(a.get("airing_at") or 0)
-
-        # Today's tab first, so what the user is looking at fills in first.
+        import time as _t
+        now = _t.time()
         today = datetime.datetime.now().weekday()
-        order = DAYS_OF_WEEK[today:] + DAYS_OF_WEEK[:today]
+        order = DAYS_OF_WEEK[today:] + DAYS_OF_WEEK[:today]  # today's tab first
         seen, pending = set(), []
         for day in order:
             for a in self.raw_data.get(day, []):
-                aid = a.get("id")
-                if aid in seen:
-                    continue
-                seen.add(aid)
-                if week_cache.needs_check(name, aid, airings.get(aid, [])):
-                    pending.append((aid, a.get("title", "")))
-
+                aid, ep, at = a.get("id"), a.get("episode") or 1, a.get("airing_at") or 0
+                if (at and at > now) or (aid, ep) in seen:
+                    continue  # only aired episodes can be verified
+                seen.add((aid, ep))
+                if week_cache.ep_needs_check(name, aid, ep, at):
+                    pending.append((aid, a.get("title", ""), ep, at))
         self.in_app_progress = (len(seen) - len(pending), len(seen))
         if not pending:
             return
@@ -438,8 +437,18 @@ class ScheduleView(QWidget):
         if self.mode != "in_app":
             return items
         prov = self._provider()
-        ok = week_cache.ok_ids(prov.name) if prov else set()
-        return [a for a in items if a.get("id") in ok]
+        if not prov:
+            return []
+        import time as _t
+        now, n, out = _t.time(), prov.name, []
+        for a in items:
+            aid, ep, at = a.get("id"), a.get("episode") or 1, a.get("airing_at") or 0
+            if at and at > now:  # upcoming: only for shows already confirmed free
+                if week_cache.show_ok(n, aid):
+                    out.append(dict(a, langs=week_cache.show_langs(n, aid)))
+            elif week_cache.ep_ok(n, aid, ep):  # aired: only if this episode really plays
+                out.append(dict(a, langs=week_cache.ep_langs(n, aid, ep)))
+        return out
 
     def _restore_scroll(self, positions: dict):
         for i, value in positions.items():
@@ -517,38 +526,58 @@ class ScheduleView(QWidget):
 
 
 class InAppWorker(QThread):
-    """Asks the provider which scheduled shows it carries, several at a time.
-    Every answer is stored in the weekly cache, so only new shows are checked next time."""
+    """Verifies each aired episode against the provider (show in catalogue AND a free upload of
+    that exact episode). Every answer is cached per episode in the weekly cache."""
     result = pyqtSignal(str, int, bool)
     done = pyqtSignal(str)
 
     def __init__(self, provider, items):
         super().__init__()
         self.provider = provider
-        self.items = items
+        self.items = items  # (anime_id, title, episode, airing_at)
 
     def run(self):
         name = self.provider.name
 
         def check(item):
-            aid, title = item
+            aid, title, ep, _ = item
             try:
-                return aid, self.provider.carries(title)
+                c = self.provider.carries(title)
+                if c is None:
+                    return None
+                if not c:
+                    return (False, [])
+                langs = self.provider.episode_langs(title, ep)
+                return None if langs is None else (bool(langs), langs)
             except Exception:
-                return aid, None  # network hiccup: stays unchecked, retried next time
+                return None  # network hiccup: stays unchecked, retried next time
 
-        count = 0
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            for aid, found in pool.map(check, self.items):  # keeps today-first order
-                if found is None:
+        pool = ThreadPoolExecutor(max_workers=6)
+        try:
+            futs = [(it, pool.submit(check, it)) for it in self.items]  # today-first order
+            count = 0
+            for it, fut in futs:
+                aid, ep = it[0], it[2]
+                try:
+                    res = fut.result(timeout=150)
+                except Exception:
+                    res = None
+                if res is None:
+                    self.result.emit(name, aid, False)  # not cached, still counts as progress
                     continue
-                week_cache.record(name, aid, found)
+                found, langs = res
+                week_cache.record_ep(name, aid, ep, found, langs)
                 self.result.emit(name, aid, found)
                 count += 1
                 if count % 10 == 0:
                     week_cache.save()
-        week_cache.save()
-        self.done.emit(name)
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+            try:
+                week_cache.save()
+            except Exception:
+                pass
+            self.done.emit(name)
 
 
 def _eta(seconds: float) -> str:
@@ -604,7 +633,7 @@ class _ScheduleRow(QFrame):
         self.status_lbl.setStyleSheet("color: #fbbf24; font-weight: 700; font-size: 12px; border: none; background: transparent;")
         rl.addWidget(self.status_lbl)
 
-        self.play_btn = QPushButton("▶ Play")
+        self.play_btn = _ic(QPushButton("Play"), "play")
         self.play_btn.setFixedSize(84, 30)
         self.play_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.play_btn.setStyleSheet("""

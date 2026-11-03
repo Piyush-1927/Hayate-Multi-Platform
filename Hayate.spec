@@ -1,16 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
-import os
 from PyInstaller.utils.hooks import collect_submodules
-
-ROOT = SPECPATH  # this spec lives in the repo root
 
 hiddenimports = []
 hiddenimports += collect_submodules('hayate')
 
 
 a = Analysis(
-    [os.path.join(ROOT, 'packaging', 'windows', 'launcher.py')],
-    pathex=[os.path.join(ROOT, 'src')],
+    ['F:/@home/panther/projects/Hayate-Multi-Platform/packaging/windows/launcher.py'],
+    pathex=['F:/@home/panther/projects/Hayate-Multi-Platform/src'],
     binaries=[],
     datas=[],
     hiddenimports=hiddenimports,
@@ -39,7 +36,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=[os.path.join(ROOT, 'app_icon.png')],
+    icon=['F:/@home/panther/projects/Hayate-Multi-Platform/app_icon.png'],
 )
 coll = COLLECT(
     exe,

@@ -1,7 +1,9 @@
 """Qt-compatible adapter around python-mpv."""
 
 import locale
+import os
 import threading
+import time
 
 from PyQt6 import QtCore
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
@@ -46,20 +48,24 @@ class MpvPlayerAdapter(QObject):
     errorOccurred = pyqtSignal(str)
 
     # mpv callbacks may run on native threads. Relay their data through Qt.
+    endReached = pyqtSignal()
     _property_update = pyqtSignal(str, object)
 
-    def __init__(self, platform: PlaybackPlatform, native_id: int, parent=None):
+    def __init__(self, platform: PlaybackPlatform, native_id: int, parent=None, gl_widget=None):
         super().__init__(parent)
 
         if not platform.supported:
             raise RuntimeError(platform.reason or "Native video embedding is unsupported.")
 
-        if platform.embedding not in ("hwnd", "x11"):
+        if platform.embedding not in ("hwnd", "x11", "gl"):
             raise RuntimeError(
                 f"Embedding backend '{platform.embedding}' is not implemented."
             )
 
-        if not native_id:
+        if platform.embedding == "gl":
+            if gl_widget is None:
+                raise RuntimeError("GL embedding needs a GLVideoSurface (not supported by this view yet).")
+        elif not native_id:
             raise RuntimeError("The native video surface has no valid window ID.")
 
         # libmpv requires LC_NUMERIC=C. Preserve other locale categories.
@@ -82,6 +88,8 @@ class MpvPlayerAdapter(QObject):
         self._position_ms = 0
         self._duration_ms = 0
         self._closed = False
+        self._timing_enabled = os.environ.get('HAYATE_MPV_TIMING') == '1'
+        self._load_started = None
         self._state = QMediaPlayer.PlaybackState.StoppedState
         self._paused = False
         self._core_idle = True
@@ -91,7 +99,7 @@ class MpvPlayerAdapter(QObject):
             QtCore.Qt.ConnectionType.QueuedConnection,
         )
 
-        native_id = int(native_id)
+        native_id = int(native_id or 0)
         if platform.embedding == "hwnd":
             # mpv's Windows wid option expects an unsigned 32-bit HWND value.
             native_id &= 0xFFFFFFFF
@@ -106,7 +114,13 @@ class MpvPlayerAdapter(QObject):
             "input_vo_keyboard": False,
             "osc": False,
             "terminal": False,
+            "ytdl": False,
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         }
+        if platform.embedding == "gl":
+            for k in ("wid", "gpu_context", "force_window"):
+                options.pop(k, None)
+            options["vo"] = "libmpv"
 
         try:
             from hayate.core import net as _net
@@ -120,6 +134,7 @@ class MpvPlayerAdapter(QObject):
             self._mpv.observe_property("duration", self._observe_property)
             self._mpv.observe_property("pause", self._observe_property)
             self._mpv.observe_property("core-idle", self._observe_property)
+            self._mpv.observe_property("eof-reached", self._observe_property)
         except Exception as exc:
             try:
                 self._mpv.terminate()
@@ -128,6 +143,17 @@ class MpvPlayerAdapter(QObject):
             raise RuntimeError(f"Could not initialize embedded libmpv: {exc}") from exc
 
         self.audio_output = MpvAudioOutput(self._mpv)
+
+        self._gl_widget = gl_widget if platform.embedding == "gl" else None
+        if self._gl_widget is not None:
+            try:
+                self._gl_widget.attach(self._mpv)
+            except Exception as exc:
+                try:
+                    self._mpv.terminate()
+                except Exception:
+                    pass
+                raise RuntimeError(f"Could not attach GL render context: {exc}") from exc
 
     def _observe_property(self, name, value):
         try:
@@ -158,6 +184,14 @@ class MpvPlayerAdapter(QObject):
             if value is not None:
                 self._core_idle = bool(value)
             self._refresh_playback_state()
+
+        elif name == "eof-reached":
+            if value:
+                if not getattr(self, "_eof_fired", False):
+                    self._eof_fired = True
+                    self.endReached.emit()
+            else:
+                self._eof_fired = False
 
     def _refresh_playback_state(self):
         if self._closed:
@@ -200,6 +234,8 @@ class MpvPlayerAdapter(QObject):
             pass
         try:
             hdr = [f"{k}: {v}" for k, v in (getattr(self, "_headers", None) or {}).items()]
+            if getattr(self, "_referer", "") and not any(k.lower() == "referer" for k in (getattr(self, "_headers", None) or {})):
+                hdr.append(f"Referer: {self._referer}")
             self._mpv["http-header-fields"] = hdr
         except Exception:
             pass
@@ -209,12 +245,19 @@ class MpvPlayerAdapter(QObject):
 
             @self._mpv.event_callback("file-loaded")
             def _on_loaded(_event):
+                if self._timing_enabled and self._load_started is not None:
+                    print(
+                        f"[Hayate timing] file-loaded: "
+                        f"{time.perf_counter() - self._load_started:.3f}s",
+                        flush=True,
+                    )
                 subs, self._pending_subs = self._pending_subs, []
                 for u in subs:
                     try:
                         self._mpv.command("sub-add", u, "select")
                     except Exception:
                         pass
+
 
     def play(self):
         if self._closed:
@@ -227,6 +270,9 @@ class MpvPlayerAdapter(QObject):
                 self._source = None
                 self._mpv.pause = False
                 self._apply_stream_options()
+                if self._timing_enabled:
+                    self._load_started = time.perf_counter()
+                    print("[Hayate timing] loadfile requested", flush=True)
                 self._mpv.loadfile(source, mode="replace")
             elif bool(self._mpv.eof_reached):
                 # With keep_open=yes, seeking/unpausing alone didn't recover
@@ -342,6 +388,12 @@ class MpvPlayerAdapter(QObject):
         if self._closed:
             return
         self._closed = True
+        gw = getattr(self, "_gl_widget", None)
+        if gw is not None:
+            try:
+                gw.detach()  # render ctx must be freed before mpv terminates
+            except Exception:
+                pass
         try:
             self._mpv.terminate()
         except Exception:

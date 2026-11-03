@@ -111,8 +111,9 @@ class ThemeManager(QObject):
     def c(self, role, a=1.0):  # QColor for paintEvent
         q = QColor(self.derived()[role]); q.setAlphaF(a); return q
 
-    def rgba(self, role, a=1.0):  # for QSS strings
-        q = self.c(role, a); return f"rgba({q.red()},{q.green()},{q.blue()},{q.alpha()})"
+    def rgba(self, role, a=1.0, mark=True):  # for QSS strings
+        q = self.c(role, a); s = f"rgba({q.red()},{q.green()},{q.blue()},{q.alpha()})"
+        return s + f"/*@{role},{a}*/" if mark else s
 
     def _save(self):
         PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -332,19 +333,43 @@ _tracked = weakref.WeakKeyDictionary()
 _orig_set = QWidget.setStyleSheet
 
 
+_ALIAS = {"#6366f1", "#818cf8", "#4f46e5"}
+
+
 def legacy(h):
     h = h.lower(); t = theme.tokens()
+    if h in _ALIAS: return t["accent"]
     if h == "#090a0f":  # text on accent
         return h if contrast(h, t["accent"]) >= contrast("#ffffff", t["accent"]) else "#ffffff"
     role = _LEGACY.get(h)
-    if not role:
-        return h
+    if not role:  # unknown shade: snap to nearest Midnight role if close enough
+        v = [int(h[i:i + 2], 16) for i in (1, 3, 5)]
+        d, role = min((sum((x - int(_BASE[r][i:i + 2], 16)) ** 2 for x, i in zip(v, (1, 3, 5))) ** .5, r)
+                      for r in _BASE if isinstance(_BASE[r], str))
+        if d > 26:
+            return h
     sg = -1 if _lum(t["app_background"]) > .5 else 1
     a, b, c = ([int(x[i:i + 2], 16) for i in (1, 3, 5)] for x in (h, _BASE[role], t[role]))
     return "#%02x%02x%02x" % tuple(max(0, min(255, n + sg * (x - y))) for x, y, n in zip(a, b, c))
 
 
+_MARK = re.compile(r"rgba\([^)]*\)/\*@(\w+),([\d.]+)\*/")
+
+
+_RGBA_ANY = re.compile(r"rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(0?\.\d+|1(?:\.0+)?)\s*\)")
+
+
+def _rgba_any(m):
+    h = "#%02x%02x%02x" % tuple(int(m.group(i)) for i in (1, 2, 3))
+    role = _LEGACY.get(h)
+    return theme.rgba(role, float(m.group(4)), mark=False) if role else m.group(0)
+
+
 def rewrite(q):
+    if "@videobg" in q:
+        q = q.replace("@videobg", "rgb(255,255,255)" if theme.is_light() else "rgb(0,0,0)")
+    if "/*@" in q:  # re-resolve role-tagged colours against the live theme
+        q = _MARK.sub(lambda m: theme.rgba(m.group(1), float(m.group(2)), mark=False), q)
     if "@glass" in q:  # translucent surface that sits on artwork
         lt = theme.is_light(); g = "app_background" if lt else "text_primary"
         q = _GLASS.sub(lambda m: theme.rgba(g, min(1.0, float(m.group(1)) * (3.5 if lt else 1))), q)
@@ -353,13 +378,17 @@ def rewrite(q):
         return q
     q = _W.sub(lambda m: f"{theme.tokens()['card_border_width']}px{m.group(1)}", q)
     q = _RGBA.sub(lambda m: theme.rgba("text_primary", float(m.group(1))), q)
+    q = _RGBA_ANY.sub(_rgba_any, q)
     return _HEX.sub(lambda m: legacy(m.group(0)), q)
 
 
 def _fix_bg(w, q):
     try:
         if "background" not in q: return
-        if type(w) is QWidget:
+        from PyQt6.QtWidgets import (QAbstractButton, QLineEdit, QAbstractScrollArea, QComboBox,
+                                     QAbstractSpinBox, QAbstractSlider, QProgressBar)
+        if not isinstance(w, (QFrame, QLabel, QAbstractButton, QLineEdit, QAbstractScrollArea, QComboBox,
+                              QAbstractSpinBox, QAbstractSlider, QProgressBar)):
             w.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         elif isinstance(w, QScrollArea):
             w.viewport().setAutoFillBackground(False)
@@ -367,6 +396,9 @@ def _fix_bg(w, q):
 
 
 def _set(self, q):
+    global _pal_done
+    if not _pal_done and QApplication.instance():
+        _pal_done = True; _sync_palette()
     _tracked[self] = q
     _orig_set(self, rewrite(q))
     _fix_bg(self, q)
@@ -375,7 +407,28 @@ def _set(self, q):
 QWidget.setStyleSheet = _set
 
 
+_pal_done = False
+
+
+def _sync_palette():
+    from PyQt6.QtGui import QPalette as P
+    app = QApplication.instance()
+    if not app: return
+    d = theme.derived(); R = P.ColorRole; p = P()
+    for r, k in {R.Window: "app_background", R.Base: "card_background", R.AlternateBase: "card_background",
+                 R.Button: "button_background", R.WindowText: "text_primary", R.Text: "text_primary",
+                 R.ButtonText: "button_text", R.Highlight: "accent", R.HighlightedText: "text_on_accent",
+                 R.ToolTipBase: "card_background", R.ToolTipText: "text_primary",
+                 R.PlaceholderText: "text_secondary"}.items():
+        p.setColor(r, QColor(d[k]))
+    app.setPalette(p)
+    for w in QApplication.topLevelWidgets():
+        try: w.setPalette(p)
+        except RuntimeError: pass
+
+
 def _refresh():
+    _sync_palette()
     for w, q in list(_tracked.items()):
         try: _orig_set(w, rewrite(q)); _fix_bg(w, q)
         except RuntimeError: pass
@@ -421,3 +474,105 @@ class AppearanceLauncherCard(QFrame):  # compact card shown in Settings
     def _open(self):
         w = self.window()
         if hasattr(w, "open_appearance_view"): w.open_appearance_view()
+
+
+def _stale_report():
+    import os
+    if not os.environ.get("HAYATE_THEME_DEBUG"): return
+    cur = {v.lower() for v in theme.derived().values() if isinstance(v, str)}
+    other = {v.lower() for p in [*PRESETS.values(), *theme.library.values()]
+             for v in p.values() if isinstance(v, str) and v.startswith("#")} - cur
+    n = 0
+    print("--- stale report: tracked", len(_tracked), "active", theme.active)
+    for w in QApplication.allWidgets():
+        try: ss = w.styleSheet()
+        except RuntimeError: continue
+        bad = sorted({h for h in _HEX.findall(ss) if h.lower() in other})
+        if bad:
+            n += 1
+            if n <= 40: print("STALE", type(w).__name__, w.objectName(), "tracked" if w in _tracked else "UNTRACKED", bad[:3])
+    print("--- stale widgets:", n)
+
+
+from PyQt6.QtCore import QTimer as _QT
+theme.changed.connect(lambda: _QT.singleShot(400, _stale_report))
+
+
+def _bg_probe():
+    import os
+    if not os.environ.get("HAYATE_THEME_DEBUG"): return
+    w = QApplication.activeWindow()
+    if not w: return
+    c = w.childAt(w.width() // 2, w.height() // 2) or w
+    print("--- bg probe; theme bg =", theme.tokens()["app_background"])
+    while c is not None:
+        print(type(c).__name__, repr(c.objectName()), "autofill", c.autoFillBackground(),
+              "pal", c.palette().window().color().name(), "ss", repr(c.styleSheet()[:50]))
+        c = c.parentWidget()
+
+
+from PyQt6.QtCore import QTimer as _QT2
+theme.changed.connect(lambda: _QT2.singleShot(600, _bg_probe))
+
+
+_hidden_float = []
+
+
+def _is_float(w):
+    from PyQt6.QtWidgets import QMainWindow, QDialog, QMenu
+    if not w.isWindow() or isinstance(w, (QMainWindow, QDialog, QMenu)): return False
+    if type(w).__name__ in ("HoverPreviewPopup", "QTipLabel"): return False
+    t = w.windowType()
+    if t == Qt.WindowType.Popup: return False
+    f = w.windowFlags()
+    return t in (Qt.WindowType.Tool, Qt.WindowType.ToolTip) or bool(f & (Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint))
+
+
+def _on_app_state(state):
+    if state == Qt.ApplicationState.ApplicationActive:
+        for w in _hidden_float:
+            try:
+                w.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True); w.show()
+            except RuntimeError: pass
+        _hidden_float.clear()
+        return
+    for w in QApplication.topLevelWidgets():
+        try:
+            if w.isVisible() and _is_float(w):
+                _hidden_float.append(w); w.hide()
+        except RuntimeError: pass
+
+
+def _install_float_guard():
+    app = QApplication.instance()
+    if app: app.applicationStateChanged.connect(_on_app_state)
+
+
+from PyQt6.QtCore import QTimer as _QT3
+_QT3.singleShot(0, _install_float_guard)
+
+
+_was_active = [True]
+_keep = []
+
+
+def _poll_active():
+    act = QApplication.activeWindow() is not None
+    if act:
+        if not _was_active[0]: _on_app_state(Qt.ApplicationState.ApplicationActive)
+    else:
+        if _was_active[0]:
+            import os
+            if os.environ.get("HAYATE_THEME_DEBUG"):
+                print("--- focus lost; visible top-levels:")
+                for w in QApplication.topLevelWidgets():
+                    if w.isVisible(): print(" ", type(w).__name__, repr(w.objectName()), int(w.windowType().value), hex(int(w.windowFlags().value)), "float" if _is_float(w) else "-")
+        _on_app_state(Qt.ApplicationState.ApplicationInactive)
+    _was_active[0] = act
+
+
+def _install_poll():
+    t = _QT3(); t.timeout.connect(_poll_active); t.start(250); _keep.append(t)
+
+
+_QT3.singleShot(0, _install_poll)

@@ -1,13 +1,20 @@
 [Desktop Entry]
-Type=Application
-Name=Hayate
-GenericName=Anime Client
+Categories=AudioVideo;Video;Player;Network;
+Comment[en_US]=Fast, native anime catalog and desktop player
 Comment=Fast, native anime catalog and desktop player
 Exec=hayate %u
+GenericName[en_US]=Anime Client
+GenericName=Anime Client
 Icon=hayate
-Terminal=false
-Categories=AudioVideo;Video;Player;Network;
-MimeType=x-scheme-handler/hayate;
 Keywords=anime;anilist;player;streaming;
+MimeType=
+Name[en_US]=Hayate
+Name=Hayate
+Path=
 StartupNotify=true
 StartupWMClass=hayate
+Terminal=false
+TerminalOptions=
+Type=Application
+X-KDE-SubstituteUID=false
+X-KDE-Username=

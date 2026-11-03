@@ -40,12 +40,13 @@ class InfoPop(QWidget):
 
     def show_at(self, btn):
         self.restyle(); self.layout().activate(); self.adjustSize()
-        g = btn.mapToGlobal(QPoint(btn.width(), btn.height() + 8))
-        scr = btn.screen().availableGeometry()
-        x = max(scr.left() + 8, min(g.x() - self.width(), scr.right() - self.width() - 8))
-        y = g.y()
-        if y + self.height() > scr.bottom():
-            y = btn.mapToGlobal(QPoint(0, 0)).y() - self.height() - 8
+        from PyQt6.QtCore import QRect
+        w = btn.window()
+        wr = QRect(w.mapToGlobal(QPoint(0, 0)), w.size())          # clamp to the app window, not the screen
+        br = QRect(btn.mapToGlobal(QPoint(0, 0)), btn.size())
+        x = br.left() - self.width() - 8                           # beside the button, on its left
+        if x < wr.left() + 8: x = br.right() + 8                   # no room: open on its right
+        y = max(wr.top() + 8, min(br.top(), wr.bottom() - self.height() - 8))
         self.move(x, y); self.show()
 
 
@@ -76,7 +77,8 @@ def _title_for(view, card):
     for name, title in (("prov_combo", "Providers"), ("adult_checkbox", "Content"),
                         ("trans_combo", "Transitions"), ("clear_btn", "Image cache"),
                         ("btn_toggle_server", "LAN streaming"),
-                        ("dns_check", "Security")):
+                        ("dns_check", "Security"),
+                        ("def_audio_combo", "Default audio"), ("cloud_combo", "Cloud sync")):
         w = getattr(view, name, None)
         if w is not None and card.isAncestorOf(w):
             return title

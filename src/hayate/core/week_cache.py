@@ -107,3 +107,55 @@ def needs_check(provider: str, anime_id: int, airings: list) -> bool:
     if any(t > last for t in aired):
         return True
     return bool(aired) and now - last > RECHECK_AFTER and max(aired) > now - RECENT_WINDOW
+
+
+# ---- per-episode confirmation (only episodes that really play get listed) ----
+RECHECK_EP = 2 * 3600          # re-check a missing aired episode this often...
+EP_WINDOW = 3 * 24 * 3600      # ...for this long after it aired (uploads can lag)
+
+
+def _eps(provider: str) -> dict:
+    return _prov(provider).setdefault("eps", {})
+
+
+def record_ep(provider: str, anime_id: int, ep: int, found: bool, langs=None):
+    with _lock:
+        _eps(provider)[f"{anime_id}:{ep}"] = [time.time(), bool(found), list(langs or [])]
+
+
+def ep_langs(provider: str, anime_id: int, ep: int) -> list:
+    with _lock:
+        v = _eps(provider).get(f"{anime_id}:{ep}")
+        return list(v[2]) if v and len(v) > 2 else []
+
+
+def show_langs(provider: str, anime_id: int) -> list:
+    with _lock:
+        pre, out = f"{anime_id}:", set()
+        for k, v in _eps(provider).items():
+            if k.startswith(pre) and v[1] and len(v) > 2:
+                out.update(v[2])
+        return sorted(out)
+
+
+def ep_ok(provider: str, anime_id: int, ep: int) -> bool:
+    with _lock:
+        v = _eps(provider).get(f"{anime_id}:{ep}")
+        return bool(v and v[1])
+
+
+def show_ok(provider: str, anime_id: int) -> bool:
+    with _lock:
+        pre = f"{anime_id}:"
+        return any(k.startswith(pre) and v[1] for k, v in _eps(provider).items())
+
+
+def ep_needs_check(provider: str, anime_id: int, ep: int, airing_at: int) -> bool:
+    with _lock:
+        v = _eps(provider).get(f"{anime_id}:{ep}")
+    if v is None:
+        return True
+    if v[1]:
+        return False
+    now = time.time()
+    return bool(airing_at) and airing_at > now - EP_WINDOW and now - v[0] > RECHECK_EP

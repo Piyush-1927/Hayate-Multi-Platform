@@ -32,6 +32,9 @@ def detect_playback_platform() -> PlaybackPlatform:
         else os.environ.get("QT_QPA_PLATFORM", "").lower()
     )
 
+    if os_name in ("linux", "windows") and os.environ.get("HAYATE_VIDEO", "").lower() == "gl":
+        return PlaybackPlatform(os_name, qt_platform, "gl", True)
+
     if os_name == "windows":
         return PlaybackPlatform(
             os_name, qt_platform, "hwnd", True
@@ -48,14 +51,7 @@ def detect_playback_platform() -> PlaybackPlatform:
 
     if os_name == "linux":
         if "wayland" in qt_platform:
-            return PlaybackPlatform(
-                os_name,
-                qt_platform,
-                "unsupported",
-                False,
-                "Native embedding is not supported through this Wayland path. "
-                "Use an X11/XWayland Qt session.",
-            )
+            return PlaybackPlatform(os_name, qt_platform, "gl", True)
 
         if qt_platform in ("xcb", "x11"):
             return PlaybackPlatform(

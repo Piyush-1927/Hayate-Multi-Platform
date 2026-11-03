@@ -1,3 +1,4 @@
+from hayate.core.assets import ic as _ic
 import re
 import time
 from datetime import datetime
@@ -111,6 +112,7 @@ class DetailsView(QWidget):
     play_requested = pyqtSignal(object, int)
     _play_started = pyqtSignal(object, int)
     _play_failed = pyqtSignal(object, int, str, str)
+    _langs_ready = pyqtSignal(object, list)
 
     def __init__(self, player: PlayerController, parent=None):
         super().__init__(parent)
@@ -144,7 +146,7 @@ class DetailsView(QWidget):
 
         # Back Header
         top_bar = QHBoxLayout()
-        back_btn = QPushButton("← Back to Home")
+        back_btn = _ic(QPushButton("Back to Home"), "arrow-left")
         back_btn.setFixedHeight(36)
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         back_btn.setStyleSheet("""
@@ -202,6 +204,12 @@ class DetailsView(QWidget):
         info_layout.addStretch()
 
         h_layout.addLayout(info_layout, stretch=1)
+        self.lang_box = QHBoxLayout()
+        self.lang_box.setSpacing(8)
+        lang_col = QVBoxLayout()
+        lang_col.addLayout(self.lang_box)
+        lang_col.addStretch()
+        h_layout.addLayout(lang_col)
         self.content_layout.addWidget(self.hero_card)
 
         # Episodes Card
@@ -267,19 +275,19 @@ class DetailsView(QWidget):
                 outline: none;
             }
         """)
-        self.audio_combo.addItem("Sub (Original)", "sub")
-        self.audio_combo.addItem("Eng Dub", "dub_eng")
-        self.audio_combo.addItem("Hindi Dub", "dub_hin")
-        self.audio_combo.addItem("Any Dub", "any_dub")
+        from hayate.core.settings import audio_options
+        for _l, _d in audio_options():
+            self.audio_combo.addItem(_l, _d)
 
         # Sync with existing saved preference
         found_idx = self.audio_combo.findData(self._saved_audio())
         if found_idx >= 0:
             self.audio_combo.setCurrentIndex(found_idx)
         self.audio_combo.currentIndexChanged.connect(self._on_audio_pref_changed)
+        self._langs_ready.connect(self._show_langs)
         ep_header.addWidget(self.audio_combo)
 
-        self.play_main_btn = QPushButton("▶ Play EP 1")
+        self.play_main_btn = _ic(QPushButton("Play EP 1"), "play")
         self.play_main_btn.setFixedHeight(34)
         self.play_main_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.play_main_btn.setStyleSheet("""
@@ -304,7 +312,7 @@ class DetailsView(QWidget):
                        ("On Hold", "on_hold"), ("Dropped", "dropped")):
             self.lib_status.addItem(_l, _k)
         self.lib_status.currentIndexChanged.connect(self._lib_save)
-        self.lib_fav = QPushButton("♡ Favorite")
+        self.lib_fav = _ic(QPushButton("Favorite"), "heart")
         self.lib_fav.setCheckable(True)
         self.lib_fav.setCursor(Qt.CursorShape.PointingHandCursor)
         self.lib_fav.toggled.connect(self._lib_save)
@@ -378,6 +386,7 @@ class DetailsView(QWidget):
         rel_layout.addWidget(rel_scroll)
 
         self.content_layout.addWidget(self.rel_card)
+        self.content_layout.addStretch(1)  # panels keep their own height; spare space goes below
 
     def _lib_sync(self, anime):
         from hayate import library_db as ldb
@@ -403,7 +412,64 @@ class DetailsView(QWidget):
         else:
             ldb.put(con, a.id, a.title, a.cover_url, a.episodes, status, fav)
 
+    _LANG_TXT = {"sub": "SUB", "eng": "ENG DUB", "hin": "HIN DUB", "dub": "DUB"}
+
     def set_anime(self, anime: AnimeMedia):
+        self._set_anime_impl(anime)
+        try:
+            self._refresh_langs(anime)
+        except Exception:
+            pass
+
+    def _clear_langs(self):
+        while self.lang_box.count():
+            w = self.lang_box.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+
+    def _refresh_langs(self, anime):
+        import threading
+        self._clear_langs()
+        prov = self.player.active_provider()
+        if not prov or not hasattr(prov, "episode_langs"):
+            return
+        ep = getattr(self, "active_ep", None) or 1
+        key = (prov.name, anime.title, ep)
+        self._lang_token = key
+        cache = self.__dict__.setdefault("_lc", {})
+        if key in cache:
+            self._show_langs(key, cache[key])
+            return
+
+        def run():
+            try:
+                langs = prov.cached_langs(anime.title) if hasattr(prov, "cached_langs") else None
+                if langs is None:  # startup scan not finished yet: check live instead
+                    langs = prov.episode_langs(anime.title, ep)
+            except Exception:
+                langs = None
+            if langs is not None:
+                cache[key] = langs
+            self._langs_ready.emit(key, list(langs or []))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show_langs(self, key, langs):
+        if key != getattr(self, "_lang_token", None):
+            return  # user already moved to another show
+        self._clear_langs()
+        from PyQt6.QtWidgets import QLabel
+        order = ["sub", "eng", "hin", "dub"]
+        for code in sorted(set(langs), key=lambda x: order.index(x) if x in order else 99):
+            chip = QLabel(self._LANG_TXT.get(code, code.upper()))
+            chip.setStyleSheet(
+                "color: #38bdf8; background-color: rgba(56,189,248,0.10); border: 1.5px solid #38bdf8;"
+                " border-radius: 6px; padding: 0 12px; font-weight: 800; font-size: 11px;")
+            chip.setFixedHeight(26)
+            chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.lang_box.addWidget(chip)
+
+    def _set_anime_impl(self, anime: AnimeMedia):
         self._lib_sync(anime)
         self.anime = anime
         self.active_ep = 1
@@ -416,7 +482,7 @@ class DetailsView(QWidget):
         self.meta_lbl.setText(f"{anime.year or 'N/A'}  |  {anime.episodes} Total Episodes  |  {genres}")
         self.desc_lbl.setText(clean_html(anime.description))
         self.ep_title_lbl.setText(f"Episodes ({anime.episodes} total)")
-        self.play_main_btn.setText("▶ Play EP 1")
+        _ic(self.play_main_btn, "play", text="Play EP 1")
 
         if hasattr(self, "_poster_reply") and self._poster_reply:
             try:
@@ -689,6 +755,15 @@ class DetailsView(QWidget):
             return f"EP {ep} hasn't aired yet. EP {a.airing_episode} is scheduled for {when}."
         return None
 
+    def _reload_audio_items(self):
+        from hayate.core.settings import audio_options
+        self.audio_combo.blockSignals(True)
+        self.audio_combo.clear()
+        for label, data in audio_options():
+            self.audio_combo.addItem(label, data)
+        self.audio_combo.setCurrentIndex(max(self.audio_combo.findData(self._saved_audio()), 0))
+        self.audio_combo.blockSignals(False)
+
     def _saved_audio(self):
         from hayate.core.settings import load_settings
         st = load_settings()
@@ -697,6 +772,7 @@ class DetailsView(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._reload_audio_items()
         i = self.audio_combo.findData(self._saved_audio())
         if i >= 0 and i != self.audio_combo.currentIndex():
             self.audio_combo.blockSignals(True)

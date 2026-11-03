@@ -600,10 +600,10 @@ class PlayerView(QWidget):
     def _setup_shortcuts(self):
         ctx = Qt.ShortcutContext.WidgetWithChildrenShortcut
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Space), self, self._toggle_play, context=ctx).setAutoRepeat(False)
-        QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_F), self, self._toggle_fullscreen, context=ctx).setAutoRepeat(False)
+        QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_F), self, self._on_f_key, context=ctx).setAutoRepeat(False)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_F11), self, self._toggle_fullscreen, context=ctx).setAutoRepeat(False)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_C), self, self._toggle_comments, context=ctx).setAutoRepeat(False)
-        QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Escape), self, self._exit_fullscreen_only, context=ctx)
+        QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Escape), self, self._on_esc_key, context=ctx)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Left), self, lambda: self._seek_relative(-5000), context=ctx)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Right), self, lambda: self._seek_relative(5000), context=ctx)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Up), self, lambda: self._adjust_volume(5), context=ctx)
@@ -705,6 +705,18 @@ class PlayerView(QWidget):
         val = max(0, min(100, self.vol_slider_docked.value() + delta))
         self.vol_slider_docked.setValue(val)
 
+    def _on_f_key(self):
+        if self._web_active() and self.window().isFullScreen():
+            self._web.press_f()
+        else:
+            self._toggle_fullscreen()
+
+    def _on_esc_key(self):
+        if self._web_active() and self._web.dom_fs:
+            self._web.exit_page_fullscreen()
+        else:
+            self._exit_fullscreen_only()
+
     def _exit_fullscreen_only(self):
         w = self.window()
         if w.isFullScreen():
@@ -751,6 +763,8 @@ class PlayerView(QWidget):
         c.toggle()
 
     def _show_floating_bar(self, screen_geom):
+        if self._web_active():
+            return
         w = self.window()
         from PyQt6.QtGui import QGuiApplication
         if (not w.isFullScreen() or self.is_bar_visible
@@ -840,7 +854,7 @@ class PlayerView(QWidget):
 
             self.top_bar_widget.setVisible(True)
             self.sidebar.setVisible(True)
-            self.docked_card.setVisible(True)
+            self.docked_card.setVisible(not self._web_active())
             self.root_layout.setContentsMargins(18, 14, 18, 14)
             self.card_viewport.setStyleSheet("""
                 QFrame {
@@ -1114,15 +1128,32 @@ class PlayerView(QWidget):
             self.video_widget.native_surface.hide()
             self.placeholder_label.hide()
             self._web.show()
-            self._web.open(target)
+            self._web.open(target, self.anime.title if self.anime else "", self.active_ep)
+            self._web.setFocus()
+            self._set_web_chrome(True)
         except Exception as exc:
             self._on_stream_error(f"Web player failed: {exc}")
+
+    def _web_active(self):
+        w = getattr(self, "_web", None)
+        return w is not None and w.isVisible()
+
+    def _set_web_chrome(self, on):
+        self.docked_card.setVisible(not on and not self.window().isFullScreen())
+        if on:
+            self.floating_bar.hide()
+            self.is_bar_visible = False
+        keep = {"F", "F11", "Esc"}
+        for sc in self.findChildren(QtGui.QShortcut):
+            if sc.key().toString() not in keep:
+                sc.setEnabled(not on)
 
     def _hide_web(self):
         w = getattr(self, "_web", None)
         if w is not None and w.isVisible():
             w.open("about:blank")
             w.hide()
+            self._set_web_chrome(False)
             self.video_widget.native_surface.show()
 
     def _on_episode_end(self):

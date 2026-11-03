@@ -1,3 +1,4 @@
+from hayate.core.assets import ic as _ic
 import re
 import certifi
 import httpx
@@ -30,6 +31,7 @@ from hayate.ui.upcoming_details_view import UpcomingDetailsView
 from hayate.ui.schedule_view import ScheduleView
 from hayate.ui.settings_view import SettingsView
 from hayate.ui.search_view import SearchView
+from hayate.ui.search_suggest import SuggestDropdown
 
 def clean_html(text: str) -> str:
     if not text:
@@ -272,7 +274,7 @@ class NavigationMenuPopup(QFrame):
         l.setContentsMargins(8, 8, 8, 8)
         l.setSpacing(4)
 
-        btn_sched = QPushButton("📅  Weekly Airing Schedule")
+        btn_sched = _ic(QPushButton("Weekly Airing Schedule"), "calendar-days")
         btn_sched.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_sched.clicked.connect(self._on_sched)
         l.addWidget(btn_sched)
@@ -332,7 +334,7 @@ class HoverPreviewPopup(QFrame):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
 
-        self.play_btn = QPushButton("▶ Play EP 1")
+        self.play_btn = _ic(QPushButton("Play EP 1"), "play")
         self.play_btn.setFixedHeight(36)
         self.play_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.play_btn.setStyleSheet("""
@@ -396,7 +398,7 @@ class HoverPreviewPopup(QFrame):
             else:
                 self.target_ep = 1
                 self.badge_lbl.setText("START WATCHING • EP 1")
-                self.play_btn.setText("▶ Play EP 1")
+                _ic(self.play_btn, "play", text="Play EP 1")
 
         genres_str = " • ".join(anime.genres[:3]) if anime.genres else "Anime"
         self.genres_lbl.setText(f"{anime.year or 'TV'}   |   {anime.episodes} Ep   |   {genres_str}")
@@ -605,6 +607,8 @@ class AnimatedStack(QStackedWidget):
         pal.setColor(_PAL.ColorRole.Window, theme.c("app_background"))
         self.setPalette(pal)
         self.setAutoFillBackground(True)
+        theme.changed.connect(self._sync_bg)
+        self._sync_bg()
         self._ov = _PageOverlay(self)
         self._ov.hide()
         self._a = _QVA2(self)
@@ -614,6 +618,11 @@ class AnimatedStack(QStackedWidget):
         self._a.valueChanged.connect(self._ov.set_t)
         self._a.finished.connect(self._ov.hide)
         self._a.finished.connect(lambda: (setattr(self._ov, 'snap', None), _BLUR_CACHE.clear()))
+
+    def _sync_bg(self):
+        self.setObjectName("animstack")
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("/*raw*/#animstack{background:%s;}" % theme.tokens()["app_background"])
 
     def setCurrentWidget(self, w):
         self.setCurrentIndex(self.indexOf(w))
@@ -765,7 +774,7 @@ class HeroSpotlightBanner(QWidget):
         layout.addStretch()
 
         bottom_bar = QHBoxLayout()
-        self.watch_btn = QPushButton("▶  Watch Now")
+        self.watch_btn = _ic(QPushButton("Watch Now"), "play")
         self.watch_btn.setFixedSize(155, 46)
         self.watch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.watch_btn.setStyleSheet("""
@@ -952,10 +961,22 @@ def _fit_pixmap(owner, pix):
     return owner._fit_pix
 
 
+def _S(n):
+    """Scale a pixel size the same way text is scaled (see logical DPI / Xft / font DPI)."""
+    from PyQt6.QtGui import QFont, QFontInfo
+    try:
+        f = QFontInfo(QFont(QApplication.font().family(), 100)).pixelSize() / (100 * 96 / 72)
+    except Exception:
+        f = 1.0
+    if abs(f - 1) < 0.04:
+        f = 1.0
+    return max(1, round(n * min(max(f, 0.4), 4.0)))
+
+
 class PosterImageWidget(QWidget):
     def __init__(self, fallback_title: str = "", parent=None):
         super().__init__(parent)
-        self.setFixedSize(185, 260)
+        self.setFixedSize(_S(185), _S(260))
         self.pixmap: QPixmap | None = None
         self.fallback_title = fallback_title
         self.progress_percent: float = 0.0
@@ -1018,7 +1039,7 @@ class PosterCard(QWidget):
                  parent=None, removable: bool = False, remove_tip: str = "Remove from history"):
         super().__init__(parent)
         self.anime = anime
-        self.setFixedSize(185, 305)
+        self.setFixedSize(_S(185), _S(305))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self._press_pos: QPoint | None = None
@@ -1040,20 +1061,21 @@ class PosterCard(QWidget):
         layout.addWidget(self.poster_widget)
 
         self.title_widget = ElidedTitleLabel(anime.title, max_lines=2)
-        self.title_widget.setFixedHeight(36)
+        self.title_widget.setFixedHeight(_S(36))
         layout.addWidget(self.title_widget)
 
         if getattr(anime, "cover_url", None):
-            image_mgr.load(anime.cover_url, self.poster_widget.set_pixmap, priority=priority)
+            image_mgr.load(anime.cover_url, self.poster_widget.set_pixmap, priority=priority,
+                           target=(round(_S(185) * self.devicePixelRatioF()), round(_S(260) * self.devicePixelRatioF())))
 
         # Hover-revealed remove button (only for cards that ask for it, e.g. history)
         self.remove_btn = None
         if removable:
-            self.remove_btn = QPushButton("✕", self)
+            self.remove_btn = _ic(QPushButton("", self), "x")
             self.remove_btn.setFixedSize(28, 28)
             self.remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.remove_btn.setToolTip(remove_tip)
-            self.remove_btn.move(185 - 28 - 8, 8)
+            self.remove_btn.move(_S(185) - 28 - 8, 8)
             self.remove_btn.clicked.connect(lambda: self.remove_requested.emit(self.anime))
             self.remove_btn.hide()
             self._style_remove_btn()
@@ -1113,11 +1135,22 @@ class PosterCard(QWidget):
 
 
 class DraggableScrollArea(QScrollArea):
+    def _end_grab(self):
+        self._dragging = False
+        if getattr(self, "_grab", False):
+            self._grab = False
+            QApplication.restoreOverrideCursor()
+
+    def hideEvent(self, e):
+        self._end_grab()
+        super().hideEvent(e)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._dragging = False
         self._drag_start_x = 0
         self._scroll_start_x = 0
+        self._grab = False
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1132,7 +1165,8 @@ class DraggableScrollArea(QScrollArea):
         if self._dragging:
             cur_x = event.globalPosition().toPoint().x()
             delta = cur_x - self._drag_start_x
-            if abs(delta) > 5:
+            if abs(delta) > 5 and not self._grab:
+                self._grab = True
                 QApplication.setOverrideCursor(Qt.CursorShape.ClosedHandCursor)
             self.horizontalScrollBar().setValue(self._scroll_start_x - delta)
             event.accept()
@@ -1142,7 +1176,7 @@ class DraggableScrollArea(QScrollArea):
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton and self._dragging:
             self._dragging = False
-            QApplication.restoreOverrideCursor()
+            self._end_grab()
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -1186,7 +1220,7 @@ class AnimeShelfWidget(QFrame):
         layout.addLayout(head)
 
         self.scroll = DraggableScrollArea()
-        self.scroll.setFixedHeight(315)
+        self.scroll.setFixedHeight(_S(315))
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -1201,6 +1235,11 @@ class AnimeShelfWidget(QFrame):
 
         layout.addWidget(self.scroll)
 
+        self._items = []
+        self._cards = {}
+        self._base_priority = 100
+        self.scroll.horizontalScrollBar().valueChanged.connect(self._sync_visible)
+
     def _style_view_all(self):
         if self.view_all_btn is not None:
             self.view_all_btn.setStyleSheet(
@@ -1208,26 +1247,90 @@ class AnimeShelfWidget(QFrame):
                 " font-weight: 700; color: %s; } QPushButton:hover { color: %s; }"
                 % (theme.rgba("accent"), theme.rgba("text_primary")))
 
+    _CARD_W = 185
+    _GAP = 20
+    _BUFFER = 2  # extra cards kept alive on each side of the viewport
+
+    def _drop_cards(self):
+        for card in self._cards.values():
+            card.deleteLater()
+        self._cards = {}
+
     def set_items(self, anime_list: list[tuple[AnimeMedia, float]] | list[AnimeMedia], base_priority: int = 100):
-        while self.inner_layout.count():
-            item = self.inner_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        bar = self.scroll.horizontalScrollBar()
+        keep = bar.value()
+        self._drop_cards()
+        self._items = [i if isinstance(i, tuple) else (i, 0.0) for i in anime_list]
+        self._base_priority = base_priority
+        n = len(self._items)
+        step = _S(185) + _S(20)
+        self.inner_widget.setFixedSize(max(1, n * step - _S(20)), _S(305))
+        self._sync_visible()
+        QTimer.singleShot(0, lambda: bar.setValue(keep))
 
-        for idx, item in enumerate(anime_list):
-            if isinstance(item, tuple):
-                anime, progress = item
-            else:
-                anime, progress = item, 0.0
-
-            priority = base_priority if idx < 10 else 10
-            card = PosterCard(anime, progress_percent=progress, priority=priority, removable=self.removable)
+    def _sync_visible(self, *_):
+        n = len(self._items)
+        if not n:
+            return
+        step = _S(185) + _S(20)
+        x = self.scroll.horizontalScrollBar().value()
+        vw = max(self.scroll.viewport().width(), step)
+        first = max(0, x // step - self._BUFFER)
+        last = min(n - 1, (x + vw) // step + self._BUFFER)
+        for idx in [i for i in self._cards if i < first or i > last]:
+            self._cards.pop(idx).deleteLater()
+        for idx in range(first, last + 1):
+            if idx in self._cards:
+                continue
+            anime, progress = self._items[idx]
+            card = PosterCard(anime, progress_percent=progress,
+                              priority=self._base_priority if idx < 10 else 10,
+                              removable=self.removable, parent=self.inner_widget)
             card.clicked.connect(self.card_clicked.emit)
             card.remove_requested.connect(self.card_remove_requested.emit)
             card.hovered.connect(self.card_hovered.emit)
-            self.inner_layout.addWidget(card)
+            card.move(idx * step, 0)
+            card.show()
+            self._cards[idx] = card
 
-        self.inner_layout.addStretch()
+    def apply_scale(self):
+        self.scroll.setFixedHeight(_S(315))
+        if self._items:
+            self.set_items(self._items, self._base_priority)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._sync_visible()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._sync_visible()
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        if not e.spontaneous():  # page switched away, not a minimise
+            self._drop_cards()
+            from hayate.core.image_cache import trim_memory
+            QTimer.singleShot(500, trim_memory)
+
+
+def _scale_key():
+    scr = QApplication.primaryScreen()
+    if not scr:
+        return (1, 1.0, (0, 0))
+    g = scr.geometry()
+    return (_S(1000), round(scr.devicePixelRatio(), 3), (g.width(), g.height()))
+
+
+def _work_area(screen):
+    """availableGeometry(), unless the platform reports a stale/tiny work area."""
+    import os as _os
+    a, g = screen.availableGeometry(), screen.geometry()
+    if _os.environ.get("HAYATE_SCALED"):
+        return g
+    if a.width() < g.width() * 0.6 or a.height() < g.height() * 0.6:
+        return g
+    return a
 
 
 class MainWindow(QMainWindow):
@@ -1236,13 +1339,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Hayate")
         screen = QApplication.primaryScreen()
         if screen:
-            _avail = screen.availableGeometry()
+            _avail = _work_area(screen)
             self.setMinimumSize(min(1000, _avail.width()), min(700, _avail.height()))
             self.setGeometry(_avail)
         else:
             self.setMinimumSize(1000, 700)
             self.resize(1260, 900)
         self.player = PlayerController()
+        self._init_scale_watch()
         self.spotlight_items: list[AnimeMedia] = []
         self.spotlight_index: int = 0
         self.home_shelves_worker: HomeShelvesWorker | None = None
@@ -1333,6 +1437,9 @@ class MainWindow(QMainWindow):
         self.search_input.setFixedHeight(38)
         self.search_input.setPlaceholderText("Search anime...")
         self.search_input.returnPressed.connect(self.trigger_search)
+        self.search_suggest = SuggestDropdown(self.search_input)
+        self.search_suggest.anime_chosen.connect(self.open_details_view)
+        self.search_suggest.see_all.connect(self.trigger_search)
         nav.addWidget(self.search_input, stretch=1)
 
         self.filter_btn = QPushButton("Filter")
@@ -1352,7 +1459,7 @@ class MainWindow(QMainWindow):
         """)
         nav.addWidget(self.filter_btn)
 
-        self.settings_btn = QPushButton("⚙")
+        self.settings_btn = _ic(QPushButton(""), "settings")
         self.settings_btn.setFixedSize(38, 38)
         self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.settings_btn.setStyleSheet("""
@@ -1449,6 +1556,8 @@ class MainWindow(QMainWindow):
         self.settings_view = SettingsView()
         self.settings_view.back_requested.connect(self.on_back_to_home)
         self.settings_view.settings_changed.connect(self.load_home)
+        self.settings_view.cloud_synced.connect(self._refresh_history_shelf)
+        QTimer.singleShot(4000, self.settings_view._cloud_autosync)
         self.stack.addWidget(self.settings_view)
 
         from hayate.ui.appearance_view import AppearanceView
@@ -1482,6 +1591,7 @@ class MainWindow(QMainWindow):
         self.search_view.back_requested.connect(self.on_back_to_home)
         self.search_view.anime_selected.connect(self.open_details_view)
         self.search_view.card_hovered.connect(self._show_hover_preview)
+        self.search_view.scrolled.connect(self.hover_preview.hide)
         self.search_view.open_settings_requested.connect(self.open_settings_view)
         self.stack.addWidget(self.search_view)
 
@@ -1505,20 +1615,17 @@ class MainWindow(QMainWindow):
         shelf.card_hovered.connect(self._show_hover_preview)
 
     def _show_hover_preview(self, anime: AnimeMedia, global_pos: QPoint, card_widget: QWidget):
-        if self.stack.currentIndex() != 0 and self.stack.currentWidget() not in (self.catalogue_view, self.history_view, self.library_view):
+        if self.stack.currentIndex() != 0 and self.stack.currentWidget() not in (self.catalogue_view, self.history_view, self.library_view, self.search_view):
             return
         self.hover_preview.set_anime(anime)
 
-        screen = QApplication.primaryScreen().availableGeometry()
-        x = global_pos.x() + 8
-        y = global_pos.y()
-
-        if x + self.hover_preview.width() > screen.right() - 20:
-            x = global_pos.x() - self.hover_preview.width() - 205
-
-        if y + self.hover_preview.height() > screen.bottom() - 20:
-            y = screen.bottom() - self.hover_preview.height() - 20
-        y = max(screen.top() + 20, y)
+        from PyQt6.QtCore import QRect
+        pw, win = self.hover_preview, self.window()
+        cr = QRect(card_widget.mapToGlobal(QPoint(0, 0)), card_widget.size())  # hovered card, global coords
+        wr = QRect(win.mapToGlobal(QPoint(0, 0)), win.size())                   # keep inside the app window
+        x = cr.right() + 12
+        if x + pw.width() > wr.right() - 12: x = cr.left() - pw.width() - 12    # no room on the right: open on the left
+        y = max(wr.top() + 12, min(cr.top(), wr.bottom() - pw.height() - 12))   # aligned to card top, clamped
 
         self.hover_preview.move(x, y)
         self.hover_preview.show()
@@ -1645,7 +1752,7 @@ class MainWindow(QMainWindow):
         scr = self.screen() or QApplication.primaryScreen()
         if not scr:
             return
-        a = scr.availableGeometry()
+        a = _work_area(scr)
         fg, g = self.frameGeometry(), self.geometry()
         l, t = g.x() - fg.x(), g.y() - fg.y()
         r, b = fg.right() - g.right(), fg.bottom() - g.bottom()
@@ -1691,8 +1798,47 @@ class MainWindow(QMainWindow):
         except Exception:
             return False
 
+    def _init_scale_watch(self):
+        self._scale_key = _scale_key()
+        self._scale_debounce = QTimer(self)
+        self._scale_debounce.setSingleShot(True)
+        self._scale_debounce.setInterval(250)
+        self._scale_debounce.timeout.connect(self._apply_scale)
+        poke = lambda *a: self._scale_debounce.start()
+
+        def hook(scr):
+            for n in ("logicalDotsPerInchChanged", "physicalDotsPerInchChanged",
+                      "geometryChanged", "availableGeometryChanged", "physicalSizeChanged"):
+                sig = getattr(scr, n, None)
+                if sig is not None:
+                    sig.connect(poke)
+
+        app = QApplication.instance()
+        for scr in app.screens():
+            hook(scr)
+        app.screenAdded.connect(lambda scr: (hook(scr), poke()))
+        app.primaryScreenChanged.connect(poke)
+        # safety net: some platforms never emit the signals above
+        self._scale_poll = QTimer(self)
+        self._scale_poll.setInterval(1500)
+        self._scale_poll.timeout.connect(lambda: _scale_key() != self._scale_key and poke())
+
+    def _apply_scale(self):
+        k = _scale_key()
+        if k == self._scale_key:
+            return
+        self._scale_key = k
+        try:
+            self._fit_to_screen()
+        except Exception:
+            pass
+        for name in self._HOME_SHELVES:
+            sh = getattr(self, name, None)
+            if sh is not None and hasattr(sh, "apply_scale"):
+                sh.apply_scale()
+
     def _refresh_history_shelf(self):
-        recent = history_mgr.get_recent_history()
+        recent = history_mgr.get_recent_history(8)
         if not recent:
             self.history_shelf.setVisible(False)
             self.history_spacer.setVisible(False)
@@ -1703,16 +1849,7 @@ class MainWindow(QMainWindow):
         shelf_data = []
         for h in recent:
             total = max(h.get("total_episodes") or 1, h.get("last_episode", 1), 1)
-            last = h.get("last_episode", 1)
-
-            watched = set(h.get("watched_episodes") or [])
-            done = len(watched) if watched else max(last - 1, 0)  # old entries lack the list
-            frac = 0.0
-            if last not in watched:
-                pr = history_mgr.get_progress(h["id"], last)
-                if pr:
-                    frac = min(pr[0] / pr[1], 1.0)
-            progress = max(3.0, min(100.0, (done + frac) / total * 100.0))
+            progress = max(3.0, history_mgr.series_percent(h))
 
             # Pull cached description if available
             cached_desc = ""
@@ -1794,7 +1931,9 @@ class MainWindow(QMainWindow):
         self.progress.setVisible(False)
         # Cards built from watch history only carry basic info, so prefer the full cached record
         cached = _ANIME_META_CACHE.get(anime.id)
-        incomplete = lambda a: not a.description or not a.genres or not a.year
+        _done = getattr(self, '_enriched_ids', set())
+        incomplete = lambda a: (not a.description or not a.genres or not a.year
+                                or (not a.relations and a.id not in _done))
         if cached and cached.description and incomplete(anime):
             anime = cached
         if self._is_unreleased(anime):
@@ -1816,6 +1955,7 @@ class MainWindow(QMainWindow):
             if not media:
                 return
             _ANIME_META_CACHE[media.id] = media
+            self.__dict__.setdefault('_enriched_ids', set()).add(media.id)
             for view in (self.upcoming_view, self.details_view):
                 current = getattr(view, "anime", None)
                 if current is not None and current.id == media.id and self.stack.currentWidget() is view:
@@ -1845,6 +1985,7 @@ class MainWindow(QMainWindow):
         self.spotlight_timer.stop()
         self.hover_preview.hide()
         self.progress.setVisible(False)
+        self.search_suggest.dismiss()
         self.stack.setCurrentWidget(self.search_view)
         self.search_view.execute_search(query)
 
@@ -1853,10 +1994,54 @@ class MainWindow(QMainWindow):
         worker = HomeShelvesWorker()
         worker.data_ready.connect(self.on_home_loaded)
         worker.error_occurred.connect(self.on_error)
+        worker.error_occurred.connect(lambda _m: self._schedule_home_retry())
         run_worker(worker)
+
+    _HOME_SHELVES = ("history_shelf", "trending_shelf", "new_releases_shelf",
+                     "finished_shelf", "upcoming_shelf")
+
+    def _schedule_home_retry(self):
+        t = getattr(self, "_home_retry", None)
+        if t is None:
+            t = self._home_retry = QTimer(self)
+            t.setSingleShot(True)
+            t.setInterval(30000)
+            t.timeout.connect(self.fetch_home_content)
+        if not t.isActive():
+            t.start()
+
+    def _restore_home_scroll(self):
+        if getattr(self, "_scroll_restored", False):
+            return
+        self._scroll_restored = True
+        QApplication.instance().aboutToQuit.connect(self._save_home_scroll)
+        from hayate.core import cloud as _cloud
+        QApplication.instance().aboutToQuit.connect(_cloud.sync_on_quit)
+        try:
+            from hayate.core.settings import load_settings
+            saved = load_settings().get("home_scroll") or {}
+        except Exception:
+            return
+        for name in self._HOME_SHELVES:
+            sh, v = getattr(self, name, None), saved.get(name)
+            if sh is not None and v:
+                QTimer.singleShot(60, lambda s=sh, v=int(v): s.scroll.horizontalScrollBar().setValue(v))
+
+    def _save_home_scroll(self):
+        try:
+            from hayate.core.settings import load_settings, save_settings
+            st = load_settings()
+            st["home_scroll"] = {n: getattr(self, n).scroll.horizontalScrollBar().value()
+                                 for n in self._HOME_SHELVES if getattr(self, n, None) is not None}
+            save_settings(st)
+        except Exception:
+            pass
 
     def on_home_loaded(self, shelves: dict):
         self.progress.setVisible(False)
+        import hayate.core.anilist as _al
+        if _al.HOME_STALE:
+            self._schedule_home_retry()
         self.spotlight_items = shelves.get("spotlight", [])
         self.spotlight_index = 0
 
@@ -1875,6 +2060,7 @@ class MainWindow(QMainWindow):
         self.new_releases_shelf.set_items(shelves.get("new_releases", []), base_priority=300)
         self.finished_shelf.set_items(shelves.get("just_finished", []), base_priority=200)
         self.upcoming_shelf.set_items(shelves.get("upcoming", []), base_priority=100)
+        self._restore_home_scroll()
 
     def update_spotlight(self, forward: bool = True):
         if self.spotlight_items:

@@ -1,3 +1,4 @@
+from hayate.core.assets import ic as _ic
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -34,7 +35,7 @@ class UpcomingDetailsView(QWidget):
 
         # Back Navigation
         top_bar = QHBoxLayout()
-        back_btn = QPushButton("← Back to Home")
+        back_btn = _ic(QPushButton("Back to Home"), "arrow-left")
         back_btn.setFixedSize(130, 34)
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         back_btn.setStyleSheet("""

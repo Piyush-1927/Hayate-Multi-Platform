@@ -1,8 +1,9 @@
+from hayate.core.assets import ic as _ic
 from hayate.core.settings import load_settings, save_settings
 from pathlib import Path
 from PyQt6 import QtCore, QtWidgets
 
-from hayate.core.lan_server import get_local_ip, lan_server
+from hayate.core.lan_server import get_local_ip, hash_password, lan_server, tailscale_installed
 
 
 class LocalHubWindow(QtWidgets.QDialog):
@@ -32,7 +33,7 @@ class LocalHubWindow(QtWidgets.QDialog):
         top_bar = QtWidgets.QHBoxLayout()
         top_bar.setSpacing(18)
 
-        btn_back = QtWidgets.QPushButton("← Back to Settings")
+        btn_back = _ic(QtWidgets.QPushButton("Back to Settings"), "arrow-left")
         btn_back.setFixedHeight(34)
         btn_back.setStyleSheet("""
             QPushButton {
@@ -150,7 +151,7 @@ class LocalHubWindow(QtWidgets.QDialog):
         row_status.addWidget(self.btn_toggle_server)
 
         # Mask eye toggle button
-        self.btn_toggle_ip = QtWidgets.QPushButton("👁")
+        self.btn_toggle_ip = _ic(QtWidgets.QPushButton(""), "eye")
         self.btn_toggle_ip.setFixedSize(34, 34)
         self.btn_toggle_ip.setToolTip("Show/Hide IP")
         self.btn_toggle_ip.setStyleSheet("""
@@ -176,20 +177,153 @@ class LocalHubWindow(QtWidgets.QDialog):
         ctrl_layout.addLayout(row_status)
         main_layout.addWidget(card_ctrl)
 
+        self._build_cfg_card(main_layout)
         main_layout.addStretch()
         self._refresh_status_text()
 
+    def _build_cfg_card(self, main_layout):
+        cfg = load_settings()
+        card = QtWidgets.QFrame()
+        card.setObjectName("lanCfg")
+        card.setStyleSheet("""
+            QFrame#lanCfg { background-color: #171724; border: 1px solid #26263a; border-radius: 12px; }
+            QLabel { color: #94a3b8; font-size: 13px; border: none; background: transparent; }
+            QComboBox, QSpinBox, QLineEdit {
+                background-color: #0f0f17; border: 1px solid #26263a; border-radius: 6px;
+                padding: 4px 10px; color: #e2e8f0; min-height: 24px; font-size: 13px;
+            }
+        """)
+        lay = QtWidgets.QVBoxLayout(card)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(12)
+        head = QtWidgets.QLabel("LAN Configuration")
+        head.setStyleSheet("color: #ffffff; font-size: 15px; font-weight: 700; border: none; background: transparent;")
+        lay.addWidget(head)
+
+        def row(label, widget):
+            r = QtWidgets.QHBoxLayout()
+            r.setSpacing(12)
+            lbl = QtWidgets.QLabel(label)
+            lbl.setMinimumWidth(130)
+            widget.setFixedWidth(280)
+            r.addWidget(lbl)
+            r.addWidget(widget)
+            r.addStretch(1)
+            lay.addLayout(r)
+
+        self.cmb_mode = QtWidgets.QComboBox()
+        for label, key in (("Self LAN (this device only)", "self"),
+                           ("Local LAN (Wi-Fi / Ethernet)", "local"),
+                           ("Internet LAN (Tailscale)", "tailscale")):
+            self.cmb_mode.addItem(label, key)
+        ts_ok = tailscale_installed()
+        if not ts_ok:
+            self.cmb_mode.model().item(2).setEnabled(False)
+            self.cmb_mode.setItemText(2, "Internet LAN (Tailscale not installed)")
+        else:
+            self.cmb_mode.setItemText(2, "Internet LAN (Tailscale, auto-connect)")
+        i = self.cmb_mode.findData(cfg.get("lan_mode", "local"))
+        self.cmb_mode.setCurrentIndex(1 if (i < 0 or (i == 2 and not ts_ok)) else i)
+        row("Network mode", self.cmb_mode)
+
+        self.spn_port = QtWidgets.QSpinBox()
+        self.spn_port.setRange(8000, 8080)
+        try:
+            self.spn_port.setValue(int(cfg.get("lan_port", 8080)))
+        except (TypeError, ValueError):
+            self.spn_port.setValue(8080)
+        row("Preferred port", self.spn_port)
+
+        self.cmb_auth = QtWidgets.QComboBox()
+        for label, key in (("No password", "none"), ("Permanent password", "password"),
+                           ("Temporary PIN (new each start)", "pin")):
+            self.cmb_auth.addItem(label, key)
+        self.cmb_auth.setCurrentIndex(max(0, self.cmb_auth.findData(cfg.get("lan_auth", "none"))))
+        row("Access", self.cmb_auth)
+
+        self.pw_box = QtWidgets.QWidget()
+        pw_lay = QtWidgets.QHBoxLayout(self.pw_box)
+        pw_lay.setContentsMargins(0, 0, 0, 0)
+        pw_lay.setSpacing(12)
+        spacer = QtWidgets.QLabel("")
+        spacer.setMinimumWidth(130)
+        self.edt_pw = QtWidgets.QLineEdit()
+        self.edt_pw.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+        self.edt_pw.setPlaceholderText("New password (min 6 characters)")
+        self.edt_pw.setFixedWidth(280)
+        btn_pw = QtWidgets.QPushButton("Set password")
+        btn_pw.setStyleSheet("QPushButton { background-color: #10b981; color: #fff; border: none; border-radius: 6px; padding: 6px 14px; font-weight: 700; } QPushButton:hover { background-color: #059669; }")
+        btn_pw.clicked.connect(self._set_password)
+        self.lbl_pw_state = QtWidgets.QLabel("")
+        pw_lay.addWidget(spacer)
+        pw_lay.addWidget(self.edt_pw)
+        pw_lay.addWidget(btn_pw)
+        pw_lay.addWidget(self.lbl_pw_state)
+        pw_lay.addStretch(1)
+        lay.addWidget(self.pw_box)
+
+        self.lbl_cfg_note = QtWidgets.QLabel("")
+        self.lbl_cfg_note.setWordWrap(True)
+        self.lbl_cfg_note.setStyleSheet("color: #fbbf24; font-size: 12px; border: none; background: transparent;")
+        lay.addWidget(self.lbl_cfg_note)
+
+        self._sync_cfg_ui()
+        self.cmb_mode.currentIndexChanged.connect(self._save_cfg)
+        self.cmb_auth.currentIndexChanged.connect(self._save_cfg)
+        self.spn_port.valueChanged.connect(self._save_cfg)
+        main_layout.addWidget(card)
+
+    def _save_cfg(self, *_):
+        cfg = load_settings()
+        cfg["lan_mode"] = self.cmb_mode.currentData()
+        cfg["lan_port"] = self.spn_port.value()
+        cfg["lan_auth"] = self.cmb_auth.currentData()
+        save_settings(cfg)
+        self._sync_cfg_ui()
+
+    def _sync_cfg_ui(self):
+        auth = self.cmb_auth.currentData()
+        mode = self.cmb_mode.currentData()
+        self.cmb_auth.setEnabled(mode != "self")
+        self.pw_box.setVisible(auth == "password" and mode != "self")
+        self.lbl_pw_state.setText("Password is set" if load_settings().get("lan_pw_hash") else "No password set yet")
+        notes = []
+        if mode == "self":
+            notes.append("Self LAN is only reachable from this computer, so no password is needed.")
+        if auth != "none" and mode == "local":
+            notes.append("Local LAN uses plain HTTP, so a password can be read by anyone sniffing this network. Internet LAN (Tailscale) is encrypted.")
+        if auth == "pin":
+            notes.append("A new 6-digit PIN is made every time the server starts; reveal it with the eye button. Username can be anything.")
+        if auth == "password":
+            notes.append("Clients log in with any username and this password.")
+        if mode == "tailscale":
+            notes.append("Hayate starts and connects Tailscale for you. First time only: an admin prompt and a browser login.")
+        if lan_server.is_running:
+            notes.append("Restart the server to apply changes.")
+        self.lbl_cfg_note.setText("\n".join(notes))
+        self.lbl_cfg_note.setVisible(bool(notes))
+
+    def _set_password(self):
+        pw = self.edt_pw.text()
+        if len(pw) < 6:
+            QtWidgets.QMessageBox.warning(self, "Password", "Use at least 6 characters.")
+            return
+        cfg = load_settings()
+        cfg["lan_pw_hash"] = hash_password(pw)
+        save_settings(cfg)
+        self.edt_pw.clear()
+        self._sync_cfg_ui()
+
     def _toggle_ip_visibility(self):
-        self._ip_visible = not self._ip_visible
-        self.btn_toggle_ip.setText("🙈" if self._ip_visible else "👁")
+        lan_server.ip_visible = not lan_server.ip_visible
         self._refresh_status_text()
 
     def _refresh_status_text(self):
-        ip = get_local_ip() if self._ip_visible else "•••.•••.•••.•••"
-        if lan_server.is_running:
-            self.status_label.setText(f"Hosting at: http://{ip}:{lan_server.port}")
-        else:
-            self.status_label.setText(f"LAN IP: {ip} (Inactive)")
+        want = bool(lan_server.ip_visible)
+        if getattr(self, "_eye_state", None) != want:
+            self._eye_state = want
+            _ic(self.btn_toggle_ip, "eye-off" if want else "eye", text="")
+        self.status_label.setText(lan_server.status_text())
 
     def _update_btn_style(self):
         if lan_server.is_running:
@@ -241,8 +375,10 @@ class LocalHubWindow(QtWidgets.QDialog):
             lan_server.stop()
             self.btn_toggle_server.setText("Start Server")
         else:
-            lan_server.start(lan_server.serving_dir)
-            self.btn_toggle_server.setText("Stop Server")
+            ok = lan_server.start(lan_server.serving_dir)
+            self.btn_toggle_server.setText("Stop Server" if ok else "Start Server")
+            if not ok:
+                QtWidgets.QMessageBox.warning(self, "LAN Server", lan_server.notice or "Could not start the server.")
 
         self._refresh_status_text()
         self._update_btn_style()

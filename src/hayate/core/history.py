@@ -102,6 +102,9 @@ class HistoryManager:
         if pos_s >= dur_s * 0.9:  # finished: drop the resume point, keep it watched
             if prog.pop(key, None) is not None:
                 self._dirty = True
+            if entry.get("done_ep") != episode:
+                entry["done_ep"] = episode
+                self._dirty = True
             watched = entry.setdefault("watched_episodes", [])
             if episode not in watched:
                 watched.append(episode)
@@ -109,6 +112,8 @@ class HistoryManager:
                 self._dirty = True
         elif pos_s >= 10:
             prog[key] = {"pos": round(pos_s, 1), "dur": round(dur_s, 1)}
+            if entry.get("done_ep") == episode:
+                entry.pop("done_ep", None)
             self._dirty = True
         if getattr(self, "_dirty", False) and time.time() - getattr(self, "_last_flush", 0.0) >= 5:
             self.flush()
@@ -140,6 +145,14 @@ class HistoryManager:
             if pr:
                 frac = min(pr[0] / pr[1], 1.0)
         return max(0.0, min(100.0, (done + frac) / total * 100.0))
+
+    def episode_percent(self, h: dict) -> float:
+        """% through the episode playback resumes at (shown on Continue Watching)."""
+        last = int(h.get("last_episode") or 0)
+        pr = self.get_progress(h["id"], last) if last else None
+        if pr:
+            return max(0.0, min(100.0, pr[0] / pr[1] * 100.0))
+        return 100.0 if last and h.get("done_ep") == last else 0.0
 
     def flush(self):
         if getattr(self, "_dirty", False):
@@ -211,8 +224,23 @@ class HistoryManager:
             raise ValueError("no valid watch history entries found")
         return clean
 
+    @staticmethod
+    def _progress_score(e: dict):
+        # Further episode wins, then finished beats mid-episode, then the larger resume point, then newer.
+        try:
+            last = int(e.get("last_episode") or 0)
+        except (TypeError, ValueError):
+            last = 0
+        done = 1 if last and e.get("done_ep") == last else 0
+        try:
+            pos = float(((e.get("progress") or {}).get(str(last)) or {}).get("pos") or 0)
+        except (TypeError, ValueError, AttributeError):
+            pos = 0.0
+        return (last, done, pos, e.get("updated_at") or 0)
+
     def merge(self, incoming: dict) -> tuple[int, int]:
-        # Keeps current history; unions watched episodes; newer entry wins the metadata.
+        # The entry with more progress wins the metadata; watched episodes are unioned;
+        # each episode keeps its larger resume point.
         added = updated = 0
         for key, new in incoming.items():
             cur = self.data.get(key)
@@ -221,15 +249,21 @@ class HistoryManager:
                 added += 1
                 continue
             entry = dict(cur)
-            entry["watched_episodes"] = sorted(set(cur.get("watched_episodes", [])) | set(new["watched_episodes"]))
-            if new["updated_at"] > cur.get("updated_at", 0):
-                for f in ("title", "cover_url", "last_episode", "updated_at"):
+            entry["watched_episodes"] = sorted(set(cur.get("watched_episodes", [])) | set(new.get("watched_episodes", [])))
+            if self._progress_score(new) > self._progress_score(cur):
+                for f in ("title", "cover_url", "banner_url", "last_episode", "updated_at", "total_episodes", "done_ep"):
                     if new.get(f) not in ("", None):
                         entry[f] = new[f]
+                if new.get("done_ep") in (None, ""):
+                    entry.pop("done_ep", None)
             prog = dict(cur.get("progress") or {})
-            newer = new["updated_at"] > cur.get("updated_at", 0)
             for ek, ev in (new.get("progress") or {}).items():
-                if newer or ek not in prog:
+                old = prog.get(ek)
+                try:
+                    better = old is None or float(ev.get("pos", 0)) > float(old.get("pos", 0))
+                except (TypeError, ValueError, AttributeError):
+                    better = old is None
+                if better:
                     prog[ek] = ev
             done = set(entry["watched_episodes"])
             prog = {ek: ev for ek, ev in prog.items() if int(ek) not in done}

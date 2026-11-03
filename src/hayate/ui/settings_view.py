@@ -1,3 +1,4 @@
+from hayate.core.assets import ic as _ic
 import json
 import subprocess
 import os
@@ -31,6 +32,8 @@ from hayate.providers import load_providers, provider_label
 from hayate.core.dialogs import dlg_open, dlg_save
 
 
+from hayate.core.theme import theme
+
 def _orig_ss(w):
     from hayate.core.theme import _tracked
     return _tracked.get(w) or w.styleSheet()
@@ -44,7 +47,7 @@ def _ensure_check_icon() -> str:
         pm.fill(QColor(0, 0, 0, 0))
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#090a0f"), 2.6)
+        pen = QPen(theme.c("text_on_accent"), 2.6)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         p.setPen(pen)
@@ -57,6 +60,7 @@ def _ensure_check_icon() -> str:
 class SettingsView(QWidget):
     back_requested = pyqtSignal()
     settings_changed = pyqtSignal()
+    cloud_synced = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -100,7 +104,7 @@ class SettingsView(QWidget):
 
         # Header
         header = QHBoxLayout()
-        back_btn = QPushButton("← Back to Home")
+        back_btn = _ic(QPushButton("Back to Home"), "arrow-left")
         back_btn.setFixedHeight(36)
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         back_btn.setStyleSheet("""
@@ -169,7 +173,7 @@ class SettingsView(QWidget):
         self.prov_combo.currentIndexChanged.connect(self._on_provider_changed)
         row_prov.addWidget(self.prov_combo)
 
-        self.reload_btn = QPushButton("↻ Refresh")
+        self.reload_btn = _ic(QPushButton("Refresh"), "refresh-cw")
         self.reload_btn.setFixedHeight(36)
         self.reload_btn.setFixedWidth(115)
         self.reload_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -188,7 +192,7 @@ class SettingsView(QWidget):
         self.reload_btn.clicked.connect(self._on_refresh_clicked)
         row_prov.addWidget(self.reload_btn)
 
-        open_folder_btn = QPushButton("📁 Open Plugins Folder")
+        open_folder_btn = _ic(QPushButton("Open Plugins Folder"), "folder-open")
         open_folder_btn.setFixedHeight(36)
         open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         open_folder_btn.setStyleSheet("""
@@ -205,7 +209,7 @@ class SettingsView(QWidget):
         """)
         open_folder_btn.clicked.connect(self._open_plugins_folder)
         row_prov.addWidget(open_folder_btn)
-        imp_btn = QPushButton("⬇ Import Provider…")
+        imp_btn = _ic(QPushButton("Import Provider…"), "download")
         imp_btn.setFixedHeight(36)
         imp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         from hayate.core import theme as _th
@@ -254,6 +258,22 @@ class SettingsView(QWidget):
         self.adult_checkbox.clicked.connect(self._on_adult_toggled)
         c_layout.addWidget(self.adult_checkbox)
         layout.addWidget(card_content)
+
+        # Catalogue card
+        card_cat = self._create_card("Catalogue")
+        cat_layout = QVBoxLayout(card_cat)
+        cat_layout.setContentsMargins(24, 20, 24, 20); cat_layout.setSpacing(12)
+        cat_desc = QLabel("When on, Catalogue search and genre filters combine (results must match both). "
+                          "When off, using one clears the other.")
+        cat_desc.setStyleSheet("color: #94a3b8; font-size: 12px;"); cat_desc.setWordWrap(True)
+        cat_layout.addWidget(cat_desc)
+        self.cat_link_check = QCheckBox("Combine search and filters")
+        self.cat_link_check.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cat_link_check.setChecked(bool(load_settings().get("catalogue_link", True)))
+        self.cat_link_check.setStyleSheet(_orig_ss(self.adult_checkbox))
+        self.cat_link_check.toggled.connect(self._on_cat_link_toggled)
+        cat_layout.addWidget(self.cat_link_check)
+        layout.addWidget(card_cat)
 
         # Banner transition card
         card_tr = self._create_card("Banner transition")
@@ -389,7 +409,7 @@ class SettingsView(QWidget):
         h_layout.addWidget(hist_desc)
 
         h_btns = QHBoxLayout()
-        export_btn = QPushButton("💾 Export History (JSON)")
+        export_btn = _ic(QPushButton("Export History (JSON)"), "save")
         export_btn.setFixedHeight(36)
         export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         export_btn.setStyleSheet("""
@@ -406,7 +426,7 @@ class SettingsView(QWidget):
         export_btn.clicked.connect(self._export_history)
         h_btns.addWidget(export_btn)
 
-        import_btn = QPushButton("📂 Import History (JSON)")
+        import_btn = _ic(QPushButton("Import History (JSON)"), "folder-open")
         import_btn.setFixedHeight(36)
         import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         import_btn.setStyleSheet("""
@@ -443,6 +463,99 @@ class SettingsView(QWidget):
         h_btns2.addStretch()
         h_layout.addLayout(h_btns2)
         layout.addWidget(card_hist)
+
+        # Card: Default Audio
+        from PyQt6.QtWidgets import QLineEdit
+        self.card_audio = self._create_card("Default Audio")
+        a_layout = QVBoxLayout(self.card_audio)
+        a_layout.setContentsMargins(24, 20, 24, 20)
+        a_layout.setSpacing(10)
+        a_desc = QLabel("Audio preselected for every anime you haven't picked one for. Add your own dub "
+                        "language (e.g. Tamil, Spanish) to get an extra entry in the audio dropdowns.")
+        a_desc.setWordWrap(True)
+        a_desc.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        a_layout.addWidget(a_desc)
+        self.def_audio_combo = QComboBox()
+        self.def_audio_combo.setFixedHeight(34)
+        self.def_audio_combo.setStyleSheet(_orig_ss(self.prov_combo))
+        a_layout.addWidget(self.def_audio_combo)
+        self.custom_dub_edit = QLineEdit(self.settings.get("custom_dub", ""))
+        self.custom_dub_edit.setPlaceholderText("Custom dub language, e.g. Tamil")
+        a_layout.addWidget(self.custom_dub_edit)
+        self._fill_def_audio()
+        self.def_audio_combo.currentIndexChanged.connect(self._on_def_audio_changed)
+        self.custom_dub_edit.editingFinished.connect(self._on_custom_dub_edited)
+        layout.addWidget(self.card_audio)
+
+        # Card: Cloud Sync (bring your own cloud)
+        from PyQt6.QtWidgets import QLineEdit
+        from hayate.core import cloud as _cloud
+        self._cloud = _cloud.get_runner()
+        self._cloud.done.connect(self._on_cloud_done)
+        self._gsign = _cloud.GoogleSignIn(self)
+        self._gsign.finished.connect(self._on_google_signin)
+        _ccfg = _cloud.load_cfg()
+        self.card_cloud = self._create_card("Cloud Sync")
+        c_layout = QVBoxLayout(self.card_cloud)
+        c_layout.setContentsMargins(24, 20, 24, 20)
+        c_layout.setSpacing(10)
+        c_desc = QLabel("Sync watch history and library to your own cloud: Google Drive (Hayate only gets its "
+                        "own hidden app folder, never your other files) or any WebDAV server such as Nextcloud. "
+                        "Every sync merges both sides, newest wins. Removing an entry on one device does not "
+                        "remove it on others.")
+        c_desc.setWordWrap(True)
+        c_desc.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        c_layout.addWidget(c_desc)
+        self.cloud_combo = QComboBox()
+        self.cloud_combo.setFixedHeight(34)
+        self.cloud_combo.setStyleSheet(_orig_ss(self.prov_combo))
+        self.cloud_combo.addItem("Off", "off")
+        self.cloud_combo.addItem("Google Drive", "google")
+        self.cloud_combo.addItem("WebDAV (Nextcloud, ownCloud, ...)", "webdav")
+        self.cloud_combo.setCurrentIndex(max(self.cloud_combo.findData(_ccfg.get("backend", "off")), 0))
+        c_layout.addWidget(self.cloud_combo)
+        self.g_status = QLabel("")
+        self.g_status.setWordWrap(True)
+        self.g_status.setStyleSheet("color: #cbd5e1; font-size: 13px;")
+        c_layout.addWidget(self.g_status)
+        self.g_btn = QPushButton("Sign in with Google")
+        self.g_btn.setFixedHeight(36)
+        self.g_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        c_layout.addWidget(self.g_btn)
+        self.dav_url = QLineEdit(_ccfg.get("webdav_url", ""))
+        self.dav_url.setPlaceholderText("https://cloud.example.com/remote.php/dav/files/you/Hayate")
+        self.dav_user = QLineEdit(_ccfg.get("webdav_user", ""))
+        self.dav_user.setPlaceholderText("Username")
+        self.dav_pass = QLineEdit(_ccfg.get("webdav_pass", ""))
+        self.dav_pass.setPlaceholderText("Password / app password")
+        self.dav_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        for _w in (self.dav_url, self.dav_user, self.dav_pass):
+            c_layout.addWidget(_w)
+            _w.editingFinished.connect(self._on_cloud_changed)
+        self.cloud_sync_btn = QPushButton("Sync now")
+        self.cloud_sync_btn.setFixedHeight(36)
+        self.cloud_sync_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        try:
+            self.cloud_sync_btn.setStyleSheet(_orig_ss(export_btn))
+            self.g_btn.setStyleSheet(_orig_ss(export_btn))
+        except NameError:
+            pass
+        c_layout.addWidget(self.cloud_sync_btn)
+        self.cloud_auto = QCheckBox("Sync automatically (startup, episode start and close)")
+        self.cloud_auto.setChecked(bool(_ccfg.get("auto", True)))
+        self.cloud_auto.setStyleSheet(_orig_ss(self.adult_checkbox))
+        self.cloud_auto.toggled.connect(self._on_cloud_changed)
+        c_layout.addWidget(self.cloud_auto)
+        self.cloud_status = QLabel("")
+        self.cloud_status.setWordWrap(True)
+        self.cloud_status.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        c_layout.addWidget(self.cloud_status)
+        self.cloud_status.hide()
+        self.cloud_combo.currentIndexChanged.connect(self._on_cloud_changed)
+        self.g_btn.clicked.connect(self._on_google_btn)
+        self.cloud_sync_btn.clicked.connect(self._cloud_sync_now)
+        self._on_cloud_changed()
+        layout.addWidget(self.card_cloud)
 
         # Card: Network & Privacy (always shown; the Tor toggle only appears if Tor is available)
         from PyQt6.QtWidgets import QLineEdit
@@ -532,7 +645,7 @@ class SettingsView(QWidget):
         self.lan_status_lbl = QLabel()
         self.lan_status_lbl.setStyleSheet("color: #38bdf8; font-size: 12px; font-weight: 600;")
 
-        self.btn_toggle_ip = QPushButton("👁")
+        self.btn_toggle_ip = _ic(QPushButton(""), "eye")
         self.btn_toggle_ip.setFixedSize(30, 30)
         self.btn_toggle_ip.setToolTip("Show/Hide IP")
         self.btn_toggle_ip.setStyleSheet("""
@@ -642,6 +755,194 @@ class SettingsView(QWidget):
         s = load_settings(); s["cache_mb"] = int(mb); save_settings(s)
         apply_cache_settings()
 
+    def _fill_def_audio(self):
+        from hayate.core.settings import audio_options
+        self.def_audio_combo.blockSignals(True)
+        self.def_audio_combo.clear()
+        for label, data in audio_options(self.settings):
+            self.def_audio_combo.addItem(label, data)
+        i = self.def_audio_combo.findData(self.settings.get("preferred_audio", "sub"))
+        self.def_audio_combo.setCurrentIndex(max(i, 0))
+        self.def_audio_combo.blockSignals(False)
+
+    def _on_def_audio_changed(self, idx):
+        from hayate.core.settings import load_settings, save_settings
+        val = self.def_audio_combo.itemData(idx)
+        if val is None:
+            return
+        self.settings["preferred_audio"] = val
+        st = load_settings()
+        st["preferred_audio"] = val
+        save_settings(st)
+
+    def _on_custom_dub_edited(self):
+        from hayate.core.settings import load_settings, save_settings
+        name = self.custom_dub_edit.text().strip()
+        if name == (self.settings.get("custom_dub") or ""):
+            return
+        st = load_settings()
+        st["custom_dub"] = name
+        if str(st.get("preferred_audio", "")).startswith("custom:"):
+            st["preferred_audio"] = f"custom:{name}" if name else "sub"
+        save_settings(st)
+        self.settings["custom_dub"] = name
+        self.settings["preferred_audio"] = st["preferred_audio"]
+        self._fill_def_audio()
+
+    def _on_cloud_changed(self, *_):
+        from hayate.core import cloud
+        c = cloud.load_cfg()
+        b = self.cloud_combo.currentData() or "off"
+        c["backend"] = b
+        c["webdav_url"] = self.dav_url.text().strip()
+        c["webdav_user"] = self.dav_user.text().strip()
+        c["webdav_pass"] = self.dav_pass.text()
+        c["auto"] = self.cloud_auto.isChecked()
+        cloud.save_cfg(c)
+        signed = bool(c.get("google_refresh"))
+        self.g_status.setVisible(b == "google")
+        self.g_btn.setVisible(b == "google" and cloud.google_configured())
+        if not cloud.google_configured():
+            self.g_status.setText("Google sign-in isn't configured in this build. Use WebDAV, or add your own credentials (see google_secrets.py.example).")
+        elif signed:
+            self.g_status.setText(f"Signed in as {c.get('google_email') or 'your Google account'}")
+        else:
+            self.g_status.setText("Not signed in.")
+        self.g_btn.setText("Sign out" if signed else "Sign in with Google")
+        for w in (self.dav_url, self.dav_user, self.dav_pass):
+            w.setVisible(b == "webdav")
+        self.cloud_auto.setVisible(b != "off")
+        ready = b == "webdav" or (b == "google" and signed)
+        self.cloud_sync_btn.setVisible(ready)
+        self.cloud_sync_btn.setEnabled(ready)
+
+    def _on_google_btn(self):
+        from hayate.core import cloud
+        if cloud.load_cfg().get("google_refresh"):
+            cloud.google_sign_out()
+            cloud.unlink()
+            self._on_cloud_changed()
+            self._cloud_msg("Signed out of Google.")
+            return
+        if not cloud.google_configured():
+            return
+        self.g_btn.setEnabled(False)
+        self._cloud_msg("Finish signing in in your browser...")
+        self._gsign.start()
+
+    def _on_google_signin(self, ok, msg):
+        self.g_btn.setEnabled(True)
+        self._cloud_msg("Signed in." if ok else msg)
+        self._on_cloud_changed()
+        if ok:
+            self._cloud_link_flow()
+
+    def _cloud_autosync(self):
+        from hayate.core import cloud
+        if cloud.needs_link():
+            return
+        c = cloud.load_cfg()
+        if c.get("backend", "off") != "off" and c.get("auto", True):
+            self._cloud_msg("Syncing...")
+            self._cloud.start()
+
+    def _cloud_link_flow(self):
+        from hayate.core import cloud
+        if getattr(self, "_probe", None) is None:
+            self._probe = cloud.LinkProbe(self)
+            self._probe.ready.connect(self._cloud_link_ready)
+            self._probe.pushed.connect(lambda ok, msg: self._cloud_msg(msg))
+        self._cloud_msg("Checking your cloud...")
+        self.cloud_sync_btn.setEnabled(False)
+        self._probe.start()
+
+    def _cloud_link_ready(self, remote, err):
+        from hayate.core import cloud
+        self._on_cloud_changed()
+        if err:
+            self._cloud_msg(err)
+            return
+        if not (cloud.remote_has_data(remote) and cloud.local_has_data()):
+            cloud.mark_linked()
+            self._cloud_msg("Syncing...")
+            self._cloud.start()
+            return
+        self._cloud_link_choose(remote)
+
+    def _cloud_confirm(self, text) -> bool:
+        from PyQt6.QtWidgets import QMessageBox
+        R = QMessageBox.ButtonRole
+        box = QMessageBox(self)
+        box.setWindowTitle("Are you sure?")
+        box.setText(text + "\n\nAre you sure?")
+        yes = box.addButton("I'm sure", R.DestructiveRole)
+        back = box.addButton("Go back", R.RejectRole)
+        box.setDefaultButton(back)
+        box.exec()
+        return box.clickedButton() == yes
+
+    def _cloud_link_choose(self, remote):
+        from PyQt6.QtWidgets import QMessageBox
+        from hayate.core import cloud
+        R = QMessageBox.ButtonRole
+        while True:
+            box = QMessageBox(self)
+            box.setWindowTitle("Connect cloud sync")
+            box.setText("This device and your cloud both already have Hayate data.\n\nWhat should Hayate do?")
+            b_merge = box.addButton("Merge both (recommended)", R.AcceptRole)
+            b_up = box.addButton("Replace the cloud data with this device's", R.DestructiveRole)
+            b_down = box.addButton("Replace this device's data with the cloud's", R.DestructiveRole)
+            box.addButton("Not now", R.RejectRole)
+            box.exec()
+            c = box.clickedButton()
+            if c == b_merge:
+                cloud.mark_linked()
+                self._cloud_msg("Merging...")
+                self._cloud.start()
+                return
+            if c == b_up:
+                if self._cloud_confirm("This replaces the history and library stored in your cloud with this device's data. "
+                                       "Anything that exists only in the cloud will be lost. Other devices that are already "
+                                       "connected may add their data back the next time they sync."):
+                    cloud.mark_linked()
+                    self._cloud_msg("Uploading...")
+                    self._probe.push_local()
+                    return
+                continue
+            if c == b_down:
+                if self._cloud_confirm("This deletes the history and library on this device and replaces them with what is "
+                                       "in your cloud. Anything that exists only on this device will be lost."):
+                    try:
+                        cloud.replace_local(remote)
+                        cloud.mark_linked()
+                        self._cloud_msg("This device now matches your cloud.")
+                    except Exception as e:
+                        self._cloud_msg(f"Could not apply the cloud data: {e}")
+                    return
+                continue
+            self._cloud_msg("Cloud sync is paused until you choose. Press Sync now to continue.")
+            return
+
+    def _cloud_msg(self, text):
+        self.cloud_status.setText(text)
+        self.cloud_status.setVisible(bool(text))
+
+    def _cloud_sync_now(self):
+        self._on_cloud_changed()
+        from hayate.core import cloud as _cl
+        if _cl.needs_link():
+            self._cloud_link_flow()
+            return
+        self._cloud_msg("Syncing...")
+        self.cloud_sync_btn.setEnabled(False)
+        self._cloud.start()
+
+    def _on_cloud_done(self, ok, msg, changed):
+        self._cloud_msg(msg)
+        self.cloud_sync_btn.setEnabled(self.cloud_combo.currentData() != "off")
+        if ok and changed:
+            self.cloud_synced.emit()
+
     def _create_card(self, title_text: str) -> QFrame:
         card = QFrame()
         card.setObjectName("settings_card")
@@ -663,7 +964,7 @@ class SettingsView(QWidget):
         """)
 
         def _reset():
-            self.reload_btn.setText("↻ Refresh")
+            _ic(self.reload_btn, "refresh-cw", text="Refresh")
             self.reload_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #212130;
@@ -789,6 +1090,11 @@ class SettingsView(QWidget):
             (os.startfile(str(p_dir)) if sys.platform == "win32" else subprocess.Popen(["xdg-open", str(p_dir)]))
         except Exception:
             QMessageBox.information(self, "Plugin Folder", f"Plugin directory is located at:\n{p_dir}")
+
+    def _on_cat_link_toggled(self, on):
+        from hayate.core.settings import load_settings as _ld, save_settings as _sv
+        s = _ld(); s["catalogue_link"] = bool(on); _sv(s)
+        if isinstance(getattr(self, "settings", None), dict): self.settings["catalogue_link"] = bool(on)
 
     def _on_adult_toggled(self):
         wants_enable = self.adult_checkbox.isChecked()
@@ -1108,9 +1414,11 @@ class SettingsView(QWidget):
             self.btn_toggle_server.setText("Start Server")
             self._refresh_lan_status_text()
         else:
-            lan_server.start(target)
-            self.btn_toggle_server.setText("Stop Server")
+            ok = lan_server.start(target)
+            self.btn_toggle_server.setText("Stop Server" if ok else "Start Server")
             self._refresh_lan_status_text()
+            if not ok:
+                QMessageBox.warning(self, "LAN Server", lan_server.notice or "Could not start the server.")
 
         self._update_server_btn_style()
 
@@ -1127,18 +1435,16 @@ class SettingsView(QWidget):
         self._update_server_btn_style()
 
     def _toggle_ip_visibility(self):
-        self._ip_visible = not getattr(self, "_ip_visible", False)
-        self.btn_toggle_ip.setText("🙈" if self._ip_visible else "👁")
+        lan_server.ip_visible = not lan_server.ip_visible
         self._refresh_lan_status_text()
 
     def _refresh_lan_status_text(self):
-        ip = get_local_ip() if getattr(self, "_ip_visible", False) else "•••.•••.•••.•••"
-        if lan_server.is_running:
-            self.lan_status_lbl.setText(f"Hosting at http://{ip}:{lan_server.port}")
-        else:
-            self.lan_status_lbl.setText(f"LAN IP: {ip} (Inactive)")
+        want = bool(lan_server.ip_visible)
+        if getattr(self, "_eye_state", None) != want:
+            self._eye_state = want
+            _ic(self.btn_toggle_ip, "eye-off" if want else "eye", text="")
+        self.lan_status_lbl.setText(lan_server.status_text())
 
     def _open_lan_player_window(self):
         player = LANPlayerWindow(self)
-        player.showMaximized()
         player.exec()

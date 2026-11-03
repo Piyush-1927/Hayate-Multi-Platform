@@ -84,7 +84,7 @@ class PlayerController:
                 finish("error", f"The stream source failed: {e}")
                 return
             if not stream:
-                finish("no_stream", NO_STREAM_MSG)
+                finish("no_stream", getattr(provider, "last_notice", "") or NO_STREAM_MSG)
                 return
             if not isinstance(stream, Stream) or not isinstance(stream.url, str) or not stream.url:
                 finish("error", "The stream source returned an invalid stream.")

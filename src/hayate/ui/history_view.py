@@ -1,3 +1,4 @@
+from hayate.core.assets import ic as _ic
 from datetime import date, datetime
 
 from PyQt6.QtCore import QPoint, Qt, QTimer, pyqtSignal
@@ -29,7 +30,7 @@ class HistoryView(QWidget):
 
         head = QHBoxLayout()
         head.setSpacing(14)
-        back = QPushButton("← Back")
+        back = _ic(QPushButton("Back"), "arrow-left")
         back.setCursor(Qt.CursorShape.PointingHandCursor)
         back.clicked.connect(self.back_requested.emit)
         head.addWidget(back)

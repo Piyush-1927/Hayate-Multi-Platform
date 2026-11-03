@@ -30,7 +30,7 @@ def _load_cfg():
 _load_cfg()
 
 _MEMORY_CACHE: dict[str, QPixmap] = {}
-_MAX_MEMORY_ITEMS = 150
+_MAX_MEMORY_BYTES = 48 * 1024 * 1024
 
 # Posters never expire by age. They are only removed when the cache is over
 # MAX_CACHE_BYTES, oldest-used first, until it is back under TARGET_CACHE_BYTES.
@@ -53,7 +53,7 @@ def prune_disk_cache():
         _bytes_since_prune = 0
         if not _cfg["on"] or not CACHE_DIR.exists():
             return
-        in_use = {_cache_path_for(u).name for u in list(_MEMORY_CACHE.keys())}
+        in_use = {_cache_path_for(u[0]).name for u in list(_MEMORY_CACHE.keys())}
         files = []
         total_size = 0
         for entry in os.scandir(CACHE_DIR):
@@ -100,14 +100,22 @@ class ImageDownloadTask(QRunnable):
     """Runs on a pool thread. Never touches QPixmap. Always emits exactly once
     (a null QImage on failure) so the pending-delivery bookkeeping can clean up."""
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, target=None):
         super().__init__()
         self.url = url
+        self.target = target
         self.signals = ImageWorkerSignals()
         self.setAutoDelete(True)
 
     def run(self):
         img = self._fetch()
+        if img is not None and self.target and not img.isNull():
+            tw, th = self.target
+            f = max(tw / img.width(), th / img.height())
+            if f < 1:  # only ever shrink, never upscale
+                from PyQt6.QtCore import Qt, QSize
+                img = img.scaled(QSize(tw, th), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                 Qt.TransformationMode.SmoothTransformation)
         self.signals.loaded.emit(img if img is not None else QImage())
 
     def _fetch(self):
@@ -147,9 +155,10 @@ class _Delivery(QObject):
     """Lives on the GUI thread so the callback always runs there, no matter
     which thread called ImageManager.load()."""
 
-    def __init__(self, url: str, callback, manager):
+    def __init__(self, url: str, callback, manager, key=None):
         super().__init__()
         self.url = url
+        self.key = key or (url, 0, 0)
         self.callback = callback
         self.manager = manager
         app = QCoreApplication.instance()
@@ -164,7 +173,7 @@ class _Delivery(QObject):
         try:
             if not img.isNull():
                 pix = QPixmap.fromImage(img)
-                _store_ram(self.url, pix)
+                _store_ram(self.key, pix)
                 if callable(self.callback):
                     self.callback(pix)
         except (RuntimeError, ReferenceError):
@@ -181,11 +190,59 @@ class _Delivery(QObject):
                 pass
 
 
-def _store_ram(url: str, pix: QPixmap):
-    if len(_MEMORY_CACHE) >= _MAX_MEMORY_ITEMS:
-        oldest_key = next(iter(_MEMORY_CACHE))
-        _MEMORY_CACHE.pop(oldest_key, None)
-    _MEMORY_CACHE[url] = pix
+def _pix_bytes(p: QPixmap) -> int:
+    return p.width() * p.height() * 4
+
+
+def _store_ram(key, pix: QPixmap):
+    _MEMORY_CACHE.pop(key, None)
+    _MEMORY_CACHE[key] = pix
+    _LAST_USED[key] = _time.monotonic()
+    _ensure_gc()
+    total = sum(_pix_bytes(p) for p in _MEMORY_CACHE.values())
+    while total > _MAX_MEMORY_BYTES and len(_MEMORY_CACHE) > 1:
+        old = next(iter(_MEMORY_CACHE))
+        total -= _pix_bytes(_MEMORY_CACHE.pop(old))
+
+
+import time as _time
+
+_LAST_USED: dict = {}
+_IDLE_SECS = 5.0
+_gc_timer = None
+
+
+def _gc_idle():
+    """Drop cached pixmaps nobody has asked for in the last _IDLE_SECS."""
+    now = _time.monotonic()
+    dead = [k for k in list(_MEMORY_CACHE) if now - _LAST_USED.get(k, 0) > _IDLE_SECS]
+    for k in dead:
+        _MEMORY_CACHE.pop(k, None)
+    for k in [k for k in _LAST_USED if k not in _MEMORY_CACHE]:
+        _LAST_USED.pop(k, None)
+    if dead:
+        trim_memory()
+
+
+def _ensure_gc():
+    global _gc_timer
+    if _gc_timer is None and QCoreApplication.instance() is not None:
+        from PyQt6.QtCore import QTimer
+        _gc_timer = QTimer()
+        _gc_timer.setInterval(2000)
+        _gc_timer.timeout.connect(_gc_idle)
+        _gc_timer.start()
+
+
+def trim_memory():
+    """Hand freed heap back to the OS (glibc only; no-op elsewhere)."""
+    import sys
+    if sys.platform.startswith("linux"):
+        try:
+            import ctypes
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
 
 
 class ImageManager:
@@ -203,15 +260,19 @@ class ImageManager:
             cls._instance = ImageManager()
         return cls._instance
 
-    def load(self, url: str, on_loaded, priority: int = 0):
+    def load(self, url: str, on_loaded, priority: int = 0, target=None):
         if not url:
             return
-        if url in _MEMORY_CACHE:
-            on_loaded(_MEMORY_CACHE[url])
+        key = (url, target[0], target[1]) if target else (url, 0, 0)
+        pix = _MEMORY_CACHE.pop(key, None)
+        if pix is not None:
+            _MEMORY_CACHE[key] = pix  # LRU touch
+            _LAST_USED[key] = _time.monotonic()
+            on_loaded(pix)
             return
 
-        task = ImageDownloadTask(url)
-        delivery = _Delivery(url, on_loaded, self)
+        task = ImageDownloadTask(url, target)
+        delivery = _Delivery(url, on_loaded, self, key)
         self._pending.add(delivery)  # keep alive until the image arrives
         task.signals.loaded.connect(delivery.deliver)
         self.pool.start(task, priority)
@@ -219,7 +280,7 @@ class ImageManager:
     def is_cached(self, url: str) -> bool:
         if not url:
             return False
-        if url in _MEMORY_CACHE:
+        if any(k[0] == url for k in _MEMORY_CACHE):
             return True
         return _cfg["on"] and _cache_path_for(url).exists()
 

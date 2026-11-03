@@ -22,3 +22,6 @@ hayate = "hayate.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+hayate = ["assets/fonts/*", "assets/icons/*"]

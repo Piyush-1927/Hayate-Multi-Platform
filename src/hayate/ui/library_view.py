@@ -1,3 +1,4 @@
+from hayate.core.assets import ic as _ic
 from PyQt6.QtCore import QPoint, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                              QPushButton, QScrollArea, QVBoxLayout, QWidget)
@@ -35,7 +36,7 @@ class LibraryView(QWidget):
 
         head = QHBoxLayout()
         head.setSpacing(14)
-        back = QPushButton("← Back")
+        back = _ic(QPushButton("Back"), "arrow-left")
         back.setCursor(Qt.CursorShape.PointingHandCursor)
         back.clicked.connect(self.back_requested.emit)
         head.addWidget(back)

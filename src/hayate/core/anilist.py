@@ -37,6 +37,7 @@ class AnimeMedia:
     start_date: Optional[Tuple[Optional[int], Optional[int], Optional[int]]] = None
     end_date: Optional[Tuple[Optional[int], Optional[int], Optional[int]]] = None
     status: Optional[str] = None
+    popularity: Optional[int] = None
 
     @property
     def display_title(self) -> str:
@@ -214,6 +215,7 @@ def _parse_media_node(item: dict) -> AnimeMedia:
         start_date=_fuzzy_date(item.get("startDate")),
         end_date=_fuzzy_date(item.get("endDate")),
         status=item.get("status"),
+        popularity=item.get("popularity"),
     )
 
 
@@ -233,6 +235,7 @@ MEDIA_FIELDS = """
   averageScore
   season
   seasonYear
+  popularity
   genres
   isAdult
   status
@@ -283,6 +286,8 @@ def _dedupe(items: List[AnimeMedia], exclude_ids: set) -> List[AnimeMedia]:
 # Search / details
 # --------------------------------------------------------------------------
 
+SEARCH_FIELDS = MEDIA_FIELDS.split("  relations {")[0] + "  synonyms\n"
+
 SEARCH_QUERY = f"""
 query ($query: String, $page: Int, $perPage: Int) {{
   Page(page: $page, perPage: $perPage) {{
@@ -293,7 +298,7 @@ query ($query: String, $page: Int, $perPage: Int) {{
       hasNextPage
     }}
     media(search: $query, type: ANIME, sort: [SEARCH_MATCH, POPULARITY_DESC]) {{
-      {MEDIA_FIELDS}
+      {SEARCH_FIELDS}
     }}
   }}
 }}
@@ -308,18 +313,34 @@ query ($id: Int) {{
 """
 
 
+_SEARCH_MEM = {}
+
+
 def search_anime_sync(query: str, page: int = 1, per_page: int = 35,
                       allow_adult: Optional[bool] = None) -> Tuple[List[AnimeMedia], bool]:
     """Returns (results, had_adult_hits). had_adult_hits is True when adult
     entries matched but were hidden by the user's setting."""
     allow = _resolve_adult(allow_adult)
+    _ck = (query.strip().lower(), page, per_page, allow)
+    _hit = _SEARCH_MEM.get(_ck)
+    if _hit and time.time() - _hit[0] < 600:
+        return list(_hit[1]), _hit[2]
     res_json = _send_query(SEARCH_QUERY, {"query": query, "page": page, "perPage": per_page})
     media_list = (res_json.get("data") or {}).get("Page", {}).get("media", []) or []
     everything = [_parse_media_node(item) for item in media_list]
+    for _m, _raw in zip(everything, media_list):
+        try:
+            _t = _raw.get("title") or {}
+            _m.synonyms = [x for x in [_t.get("romaji"), _t.get("english"), *(_raw.get("synonyms") or [])] if x]
+        except Exception:
+            pass
     if allow:
-        return everything, False
-    kept = [m for m in everything if not m.is_adult]
-    return kept, len(kept) != len(everything)
+        out = (everything, False)
+    else:
+        kept = [m for m in everything if not m.is_adult]
+        out = (kept, len(kept) != len(everything))
+    _SEARCH_MEM[_ck] = (time.time(), out[0], out[1])
+    return out
 
 
 def search_many_sync(titles: List[str], allow_adult: Optional[bool] = None) -> List[Optional[AnimeMedia]]:
@@ -351,8 +372,9 @@ def get_anime_by_id_sync(anime_id: int) -> Optional[AnimeMedia]:
 # Home shelves
 # --------------------------------------------------------------------------
 
-UPCOMING_SHELF_LIMIT = 20
-SHELF_LIMIT = 12
+UPCOMING_SHELF_LIMIT = 32
+SHELF_LIMIT = 32
+FINISHED_SHELF_LIMIT = 16
 SPOTLIGHT_LIMIT = 10
 
 
@@ -365,22 +387,22 @@ query ($monthAgo: FuzzyDateInt) {{
       {MEDIA_FIELDS}
     }}
   }}
-  trending: Page(page: 1, perPage: 20) {{
+  trending: Page(page: 1, perPage: 45) {{
     media(type: ANIME, sort: TRENDING_DESC, {adult}) {{
       {MEDIA_FIELDS}
     }}
   }}
-  new_releases: Page(page: 1, perPage: 24) {{
+  new_releases: Page(page: 1, perPage: 50) {{
     media(type: ANIME, status: RELEASING, sort: START_DATE_DESC, format_in: [TV, ONA], {adult}) {{
       {MEDIA_FIELDS}
     }}
   }}
-  just_finished: Page(page: 1, perPage: 12) {{
+  just_finished: Page(page: 1, perPage: 30) {{
     media(type: ANIME, status: FINISHED, sort: END_DATE_DESC, endDate_greater: $monthAgo, format_in: [TV, ONA], {adult}) {{
       {MEDIA_FIELDS}
     }}
   }}
-  upcoming: Page(page: 1, perPage: 30) {{
+  upcoming: Page(page: 1, perPage: 50) {{
     media(type: ANIME, status: NOT_YET_RELEASED, sort: POPULARITY_DESC, {adult}) {{
       {MEDIA_FIELDS}
     }}
@@ -415,7 +437,7 @@ def build_shelves(data: dict, allow_adult: bool) -> Dict[str, List[AnimeMedia]]:
     new_releases = [m for m in _parse_list(raw("new_releases"), allow_adult) if not m.has_prequel][:SHELF_LIMIT]
 
     # Just finished: query already limits to the last 30 days, newest first.
-    just_finished = _parse_list(raw("just_finished"), allow_adult)[:SHELF_LIMIT]
+    just_finished = _parse_list(raw("just_finished"), allow_adult)[:FINISHED_SHELF_LIMIT]
 
     # Upcoming: only entries with a confirmed premiere month.
     upcoming = [m for m in _parse_list(raw("upcoming"), allow_adult) if m.is_date_confirmed][:UPCOMING_SHELF_LIMIT]
@@ -437,27 +459,35 @@ def _home_cache_path():
     return cache_dir() / "home_cache.json"
 
 
+HOME_STALE = False  # True when the last Home load came from the old on-disk cache
+
+
 def get_home_shelves_sync(allow_adult: Optional[bool] = None, use_cache: bool = True) -> Dict[str, List[AnimeMedia]]:
+    global HOME_STALE
+    import hashlib
     allow = _resolve_adult(allow_adult)
+    qsig = hashlib.sha1(_home_query(allow).encode()).hexdigest()[:12]
     path = _home_cache_path()
 
     if use_cache:
         try:
             blob = json.loads(path.read_text(encoding="utf-8"))
             fresh = time.time() - blob.get("fetched_at", 0) < HOME_CACHE_TTL
-            if fresh and blob.get("allow_adult") == allow and blob.get("date") == date.today().isoformat():
+            if fresh and blob.get("qsig") == qsig and blob.get("allow_adult") == allow and blob.get("date") == date.today().isoformat():
+                HOME_STALE = False
                 return build_shelves(blob["data"], allow)
         except Exception:
             pass
 
     month_ago = _fuzzy_int(date.today() - timedelta(days=30))
     try:
-        res_json = _send_query(_home_query(allow), {"monthAgo": month_ago})
+        res_json = _send_query_net(_home_query(allow), {"monthAgo": month_ago})
     except Exception:
         # offline / API down: serve the last good cache, however old
         try:
             blob = json.loads(path.read_text(encoding="utf-8"))
             if blob.get("allow_adult") == allow and blob.get("data"):
+                HOME_STALE = True
                 return build_shelves(blob["data"], allow)
         except Exception:
             pass
@@ -467,11 +497,13 @@ def get_home_shelves_sync(allow_adult: Optional[bool] = None, use_cache: bool = 
         path.write_text(json.dumps({
             "fetched_at": time.time(),
             "allow_adult": allow,
+            "qsig": qsig,
             "date": date.today().isoformat(),
             "data": data,
         }), encoding="utf-8")
     except Exception:
         pass
+    HOME_STALE = False
     return build_shelves(data, allow)
 
 
@@ -619,3 +651,37 @@ def get_weekly_schedule_sync(start_timestamp: Optional[int] = None,
     data = build_schedule(entries, week_start, allow)
     _write_schedule_cache(week_start, allow, data)
     return data
+
+
+
+def smart_search_sync(query: str, page: int = 1, per_page: int = 35,
+                      allow_adult: Optional[bool] = None, max_tokens: int = 3):
+    # Full query first (exact matches on top), then one search per word, plus
+    # typo variants when the full query finds almost nothing ("vlack" -> "lack").
+    from hayate.core.search_rank import tokens, merge_rank, norm, typo_variants
+    q = query.strip()
+    results, adult = search_anime_sync(q, page=page, per_page=per_page, allow_adult=allow_adult)
+    groups = [(results, 300, 6, False)]
+    if page == 1:
+        toks = sorted(set(tokens(q)), key=len, reverse=True)[:max_tokens]
+        jobs = []
+        if len(results) < 15 and (len(toks) > 1 or (toks and toks[0] != norm(q))):
+            jobs += [(t, 60, 2, False) for t in toks]
+        if len(results) < 4:
+            jobs += [(v, 0, 0, True) for v in typo_variants(q)]
+        def _one(job):
+            try:
+                return search_anime_sync(job[0], per_page=max(10, per_page // 2), allow_adult=allow_adult)
+            except Exception:
+                return None
+        if jobs:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
+                outs = list(ex.map(_one, jobs))
+            for (text, base, step, need), o in zip(jobs, outs):
+                if o is None:
+                    continue
+                r, a = o
+                adult = adult or a
+                groups.append((r, base, step, need))
+    return merge_rank(q, groups), adult
