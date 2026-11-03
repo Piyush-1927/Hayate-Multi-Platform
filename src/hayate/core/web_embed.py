@@ -95,6 +95,12 @@ if WEB_OK:
                 if msg.startswith("[hayate] lang ") and msg.endswith(" not found") and self.parent()._pending_watch:
                     from PyQt6.QtCore import QTimer
                     QTimer.singleShot(300, self.parent()._go_pending)
+                if msg.startswith("[hayate] audio open "):
+                    x, y = (int(v) for v in msg.split("open ", 1)[1].split()[:2])
+                    self.parent()._aud_click(x, y)
+                if msg.startswith("[hayate] audio pick "):
+                    x, y = (int(v) for v in msg.split("pick ", 1)[1].split()[:2])
+                    self.parent()._real_click(x, y)
                 if msg.startswith("[hayate] episode card"):
                     self.parent()._ep_clicked = True
                 if msg.startswith("[hayate] lang"):
@@ -147,6 +153,10 @@ if WEB_OK:
             s = u.toString()
             print('[web]', s, flush=True)
             self._learn(s)
+            if "/watch" in s and getattr(self, "_lang", "") and not CRAWL and s.split("?")[0] != self._aud_url:
+                self._aud_url = s.split("?")[0]
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(4000, self._press_audio)
             if self._q and s.split('?')[0].rstrip('/').endswith('/search') and 'q=' not in s:
                 self._type_query()
             elif self._autoplay and ('/shows/' in s or '/movies/' in s):
@@ -182,7 +192,7 @@ if WEB_OK:
             self._pending_watch = ""
             if direct:
                 print("[web] direct episode", direct, "lang", repr(self._lang), flush=True)
-                if self._lang and not CRAWL:
+                if self._lang and not CRAWL and os.environ.get("HAYATE_LANG_DETOUR"):
                     from PyQt6.QtCore import QTimer
                     self._pending_watch = direct
                     url = _show_root(direct)
@@ -191,7 +201,7 @@ if WEB_OK:
                     tok = self._pw_tok
                     QTimer.singleShot(30000, lambda: self._go_pending(tok))
                 else:
-                    self._target, self._autoplay, self._lang, self._season, self._q = direct, False, "", 0, ""
+                    self._target, self._autoplay, self._season, self._q = direct, False, 0, ""
                     url = direct
                 self._advance()
             self.load(QUrl(url))
@@ -207,6 +217,7 @@ if WEB_OK:
         _cr_langs = None
         _pending_watch = ""
         _pw_tok = 0
+        _aud_url = ""
 
         def _advance(self):
             from PyQt6.QtCore import QTimer
@@ -290,6 +301,47 @@ if WEB_OK:
               if(hit.length){clearInterval(t);var r=hit[0].getBoundingClientRect();
                 console.log('[hayate] lang click '+Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2));return;}
               if(++n>20){clearInterval(t);console.log('[hayate] lang '+lang+' not found');}
+            },300);})(LANG);""".replace("LANG", json.dumps(lang))
+            self.page().runJavaScript(js)
+
+        def _aud_click(self, x, y):
+            from PyQt6.QtCore import QTimer, QPointF, QEvent, Qt
+            from PyQt6.QtGui import QMouseEvent
+            from PyQt6.QtWidgets import QApplication
+            t = self.focusProxy() or self
+            N, M = Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier
+            QApplication.sendEvent(t, QMouseEvent(QEvent.Type.MouseMove, QPointF(x - 40, y + 60), N, N, M))
+            QTimer.singleShot(500, lambda: self._real_click(x, y))
+
+        def _press_audio(self):
+            import json
+            lang = (getattr(self, "_lang", "") or "").replace("+", " ")
+            if not lang:
+                return
+            js = r"""(function(lang){var n=0,opens=0,w=lang.toLowerCase().split(' ')[0];
+            var t=setInterval(function(){
+              function vis(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;}
+              function first(e){return (e.innerText||'').trim().split('\n')[0].trim();}
+              var all=[].slice.call(document.querySelectorAll('div,span,button,li,p,[role=button]')).filter(vis);
+              var sub=all.filter(function(e){return (e.innerText||'').trim().toUpperCase()==='SUBTITLES';})[0];
+              var head=all.filter(function(e){return (e.innerText||'').trim().toUpperCase()==='AUDIO';})[0];
+              if(head&&sub){
+                var sl=sub.getBoundingClientRect().left,hb=head.getBoundingClientRect().bottom;
+                var c=all.filter(function(e){var r=e.getBoundingClientRect();
+                  return e!==head&&r.left<sl-20&&r.top>hb-2&&r.width<300&&r.height<90&&(e.innerText||'').trim().length<40;});
+                var hit=c.filter(function(e){return first(e).toLowerCase().split(' ')[0]===w;});
+                clearInterval(t);
+                if(!hit.length){console.log('[hayate] audio '+lang+' not available: '+JSON.stringify(c.map(first).slice(0,6)));return;}
+                hit.sort(function(a,b){var x=a.getBoundingClientRect(),y=b.getBoundingClientRect();return y.width*y.height-x.width*x.height;});
+                var e=hit[0];
+                if(e.querySelector('svg')){console.log('[hayate] audio '+lang+' already set');return;}
+                var r=e.getBoundingClientRect();
+                console.log('[hayate] audio pick '+Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2));return;}
+              if(n%7===0&&opens<5){
+                var b=all.filter(function(e){return /^audio\s*&\s*subtitles$/i.test((e.innerText||'').trim());});
+                if(b.length){var q=b[b.length-1].getBoundingClientRect();opens++;
+                  console.log('[hayate] audio open '+Math.round(q.left+q.width/2)+' '+Math.round(q.top+q.height/2));}}
+              if(++n>60){clearInterval(t);console.log('[hayate] audio menu not found');}
             },300);})(LANG);""".replace("LANG", json.dumps(lang))
             self.page().runJavaScript(js)
 
