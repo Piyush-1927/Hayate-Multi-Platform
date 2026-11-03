@@ -402,7 +402,10 @@ if WEB_OK:
                 setTimeout(function(){var r=tg.getBoundingClientRect();
                   console.log('[hayate] click '+Math.round(r.left+r.width/2)+' '+Math.round(r.top+r.height/2));},600);
                 return;}
-              if(++n>40){clearInterval(t);
+              if(n%3===2){var mb=[].slice.call(document.querySelectorAll('button,a,[role=button],div,span')).filter(function(e){
+                var x=(e.innerText||'').trim();return e.offsetParent!==null&&x.length<30&&/^(show|view|load|see)\s*(more|all)/i.test(x);})[0];
+                if(mb){mb.scrollIntoView({block:'center'});mb.click();}}
+              if(++n>60){clearInterval(t);
                 var sm=[].slice.call(document.querySelectorAll('a,button,li,div')).map(function(e){
                   return (e.innerText||'').trim().replace(/\s+/g,' ');}).filter(function(x){
                   return x&&x.length<100&&/\bS\s*\d+\s*E\s*\d+/i.test(x);}).slice(0,8);
