@@ -153,8 +153,8 @@ if WEB_OK:
             s = u.toString()
             print('[web]', s, flush=True)
             self._learn(s)
-            if "/watch" in s and getattr(self, "_lang", "") and not CRAWL and s.split("?")[0] != self._aud_url:
-                self._aud_url = s.split("?")[0]
+            if "/watch" in s and self._aud_pending:
+                self._aud_pending = False
                 from PyQt6.QtCore import QTimer
                 QTimer.singleShot(4000, self._press_audio)
             if self._q and s.split('?')[0].rstrip('/').endswith('/search') and 'q=' not in s:
@@ -179,6 +179,10 @@ if WEB_OK:
             from urllib.parse import unquote
             url, _, lang = url.partition("#hayate_lang=")
             self._lang = unquote(lang)
+            self._aud_pending = bool(self._lang) and not CRAWL
+            if not getattr(self, "_aud_hooked", False):
+                self._aud_hooked = True
+                self.loadFinished.connect(self._aud_loaded)
             url = url if ("/watch" in url and not CRAWL) else _show_root(url)
             self._ep = ep
             self._season = _season_for(key)
@@ -218,6 +222,13 @@ if WEB_OK:
         _pending_watch = ""
         _pw_tok = 0
         _aud_url = ""
+        _aud_pending = False
+
+        def _aud_loaded(self, ok):
+            if ok and self._aud_pending and "/watch" in self.url().toString():
+                self._aud_pending = False
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(4000, self._press_audio)
 
         def _advance(self):
             from PyQt6.QtCore import QTimer
