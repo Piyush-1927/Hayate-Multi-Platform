@@ -153,6 +153,9 @@ if WEB_OK:
             s = u.toString()
             print('[web]', s, flush=True)
             self._learn(s)
+            if "/watch" in s and not CRAWL:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(3000, self._aud_watch)
             if "/watch" in s and self._aud_pending:
                 self._aud_pending = False
                 from PyQt6.QtCore import QTimer
@@ -314,6 +317,20 @@ if WEB_OK:
               if(++n>20){clearInterval(t);console.log('[hayate] lang '+lang+' not found');}
             },300);})(LANG);""".replace("LANG", json.dumps(lang))
             self.page().runJavaScript(js)
+
+        def _aud_watch(self):
+            self.page().runJavaScript(r"""(function(){if(window.__hyAud)return;window.__hyAud=1;
+            function vis(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;}
+            document.addEventListener('click',function(ev){
+              var all=[].slice.call(document.querySelectorAll('div,span,p')).filter(vis);
+              var sub=all.filter(function(e){return (e.innerText||'').trim().toUpperCase()==='SUBTITLES';})[0];
+              var head=all.filter(function(e){return (e.innerText||'').trim().toUpperCase()==='AUDIO';})[0];
+              if(!sub||!head)return;
+              var sl=sub.getBoundingClientRect().left,hb=head.getBoundingClientRect().bottom,el=ev.target;
+              for(var i=0;i<4&&el;i++,el=el.parentElement){var r=el.getBoundingClientRect(),x=(el.innerText||'').trim();
+                if(r.left<sl-20&&r.top>hb-2&&r.width<300&&r.height<90&&x&&x.length<40&&!/report/i.test(x)){
+                  console.log('[hayate] audio user '+x.split('\n')[0].trim());return;}}
+            },true);})();""")
 
         def _aud_click(self, x, y):
             from PyQt6.QtCore import QTimer, QPointF, QEvent, Qt
