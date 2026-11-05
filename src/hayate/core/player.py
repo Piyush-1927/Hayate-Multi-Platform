@@ -62,7 +62,7 @@ class PlayerController:
 
     def reload_providers(self):
         """Re-scans ~/.config/hayate/providers/ and updates in memory."""
-        self.providers = load_providers()
+        self.providers = load_providers(force=True)
         return self.providers
 
     def play(self, title, episode, dub=False, quality="best", wid=None, on_player_started=None, on_finished=None):

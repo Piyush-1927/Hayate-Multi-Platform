@@ -35,6 +35,27 @@ def get_net_mgr() -> QNetworkAccessManager:
     _NET_MGR.setProxy(net.qt_proxy())
     return _NET_MGR
 
+class ElidedLabel(QLabel):
+    """Single-line label that ends in '...' when the text doesn't fit."""
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        self._full = text
+        self.setToolTip(text)
+        self.setMinimumWidth(0)
+
+    def _apply(self):
+        super().setText(self.fontMetrics().elidedText(
+            self._full, Qt.TextElideMode.ElideRight, max(10, self.width())))
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._apply()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._apply()
+
+
 class RelationCard(QFrame):
     clicked = pyqtSignal(dict)
 
@@ -68,11 +89,11 @@ class RelationCard(QFrame):
 
         self.type_lbl = QLabel(rel.get("relation_type", "RELATED"))
         self.type_lbl.setStyleSheet("color: #38bdf8; font-size: 10px; font-weight: 800; border: none; background: transparent;")
+        self.type_lbl.setFixedHeight(14)
         layout.addWidget(self.type_lbl)
 
-        self.title_lbl = QLabel(rel.get("title", "Unknown"))
+        self.title_lbl = ElidedLabel(rel.get("title", "Unknown"))
         self.title_lbl.setStyleSheet("color: #ffffff; font-size: 11px; font-weight: 600; border: none; background: transparent;")
-        self.title_lbl.setWordWrap(True)
         layout.addWidget(self.title_lbl)
         layout.addStretch()
 
@@ -484,13 +505,18 @@ class DetailsView(QWidget):
         self.ep_title_lbl.setText(f"Episodes ({anime.episodes} total)")
         _ic(self.play_main_btn, "play", text="Play EP 1")
 
-        if hasattr(self, "_poster_reply") and self._poster_reply:
+        _old = getattr(self, "_poster_reply", None)
+        self._poster_reply = None
+        if _old is not None:
             try:
-                self._poster_reply.abort()
+                _old.finished.disconnect()
             except Exception:
                 pass
-            self._poster_reply.deleteLater()
-            self._poster_reply = None
+            try:
+                _old.abort()
+            except Exception:
+                pass
+            _old.deleteLater()
 
         if anime.cover_url:
             req = QNetworkRequest(QUrl(anime.cover_url))
@@ -524,9 +550,10 @@ class DetailsView(QWidget):
                     w.cleanup()
                 w.deleteLater()
 
-        if anime.relations:
+        rels = [r for r in (anime.relations or []) if r.get("relation_type") != "CHARACTER"]
+        if rels:
             self.rel_card.setVisible(True)
-            for rel in anime.relations:
+            for rel in rels:
                 card = RelationCard(rel)
                 card.clicked.connect(lambda r: self.relation_selected.emit(r["id"]))
                 self.rel_inner_layout.addWidget(card)

@@ -685,3 +685,38 @@ def smart_search_sync(query: str, page: int = 1, per_page: int = 35,
                 adult = adult or a
                 groups.append((r, base, step, need))
     return merge_rank(q, groups), adult
+
+
+# --------------------------------------------------------------------------
+# Top anime panel (Day = trending, Week = this season, Month = all-time)
+# --------------------------------------------------------------------------
+TOP_CACHE_TTL = 20 * 60
+_TOP_CACHE: Dict[Tuple[str, bool], Tuple[float, List[AnimeMedia]]] = {}
+
+
+def _current_season() -> Tuple[str, int]:
+    t = date.today()
+    return ("WINTER", "SPRING", "SUMMER", "FALL")[(t.month - 1) // 3], t.year
+
+
+def get_top_sync(period: str = "day", allow_adult: Optional[bool] = None, limit: int = 10) -> List[AnimeMedia]:
+    allow = _resolve_adult(allow_adult)
+    key = (period, allow)
+    hit = _TOP_CACHE.get(key)
+    if hit and time.time() - hit[0] < TOP_CACHE_TTL:
+        return hit[1]
+    if period == "week":
+        season, year = _current_season()
+        flt, sort = f"season: {season}, seasonYear: {year},", "POPULARITY_DESC"
+    elif period == "month":
+        flt, sort = "", "POPULARITY_DESC"
+    else:
+        flt, sort = "", "TRENDING_DESC"
+    q = (f"query {{ Page(page: 1, perPage: {int(limit)}) {{ media(type: ANIME, {flt} "
+         f"sort: {sort}, {_adult_arg(allow)}) {{ {MEDIA_FIELDS} }} }} }}")
+    res = _send_query(q)  # falls back to the on-disk copy when offline
+    raw = ((res.get("data") or {}).get("Page") or {}).get("media", [])
+    items = _parse_list(raw, allow)[:limit]
+    if items:
+        _TOP_CACHE[key] = (time.time(), items)
+    return items

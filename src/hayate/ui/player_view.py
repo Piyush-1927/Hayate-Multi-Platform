@@ -11,7 +11,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtMultimedia import QMediaPlayer
 from hayate.core.playback_platform import detect_playback_platform
 from hayate.core.mpv_adapter import MpvPlayerAdapter
-from hayate.core.web_embed import WEB_OK, WebPane
 from hayate.ui.gl_video_surface import GLVideoSurface
 
 from hayate.core.anilist import AnimeMedia
@@ -602,16 +601,39 @@ class PlayerView(QWidget):
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Space), self, self._toggle_play, context=ctx).setAutoRepeat(False)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_F), self, self._on_f_key, context=ctx).setAutoRepeat(False)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_F11), self, self._toggle_fullscreen, context=ctx).setAutoRepeat(False)
-        QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_C), self, self._toggle_comments, context=ctx).setAutoRepeat(False)
+        _cs = QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_C), self,
+                             lambda: self.isVisible() and self._toggle_comments(),
+                             context=Qt.ShortcutContext.ApplicationShortcut)
+        _cs.setAutoRepeat(False)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Escape), self, self._on_esc_key, context=ctx)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Left), self, lambda: self._seek_relative(-5000), context=ctx)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Right), self, lambda: self._seek_relative(5000), context=ctx)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Up), self, lambda: self._adjust_volume(5), context=ctx)
         QtGui.QShortcut(QtGui.QKeySequence(Qt.Key.Key_Down), self, lambda: self._adjust_volume(-5), context=ctx)
 
+    _mc_owner = None  # the one view that currently holds the process-wide MPRIS object
+
+    def _release_other_media_controls(self):
+        prev = PlayerView._mc_owner
+        if prev is not None and prev is not self:
+            try:
+                prev._shutdown_media_controls()
+            except Exception:
+                pass
+        PlayerView._mc_owner = self
+
+    def _ensure_media_controls(self):
+        mc = getattr(self, "_mc", None)
+        if self.media_player is not None and (mc is None or not getattr(mc, "ok", True)):
+            self._init_media_controls(self.media_player)
+
     def _init_media_controls(self, player):
         from hayate.ui import media_controls
-        if getattr(self, "_mc", None) is None:
+        mc0 = getattr(self, "_mc", None)
+        if mc0 is not None and not getattr(mc0, "ok", True):
+            self._mc = mc0 = None
+        if mc0 is None:
+            self._release_other_media_controls()
             def seek_abs(us):
                 if self.media_player is not None:
                     self.media_player.setPosition(max(0, int(us / 1000)))
@@ -754,13 +776,17 @@ class PlayerView(QWidget):
                         self.hide_timer.start()
 
     def _toggle_comments(self):
-        from hayate.ui.comments_card import CommentsCard
+        from hayate.ui.comments_window import CommentsLauncher as CommentsCard
         c = getattr(self, "_comments_card", None)
         if c is None:
             c = self._comments_card = CommentsCard(
                 self.video_widget, detect_playback_platform().embedding == "gl")
-        c.set_media(self.anime.id if self.anime else None)
+        c.set_media(self.anime.id if self.anime else None, getattr(self, "active_ep", None))
         c.toggle()
+
+    def _cmt_open(self):
+        c = getattr(self, "_comments_card", None)
+        return bool(c and c._alive())
 
     def _show_floating_bar(self, screen_geom):
         if self._web_active():
@@ -768,7 +794,7 @@ class PlayerView(QWidget):
         w = self.window()
         from PyQt6.QtGui import QGuiApplication
         if (not w.isFullScreen() or self.is_bar_visible
-                or QGuiApplication.applicationState() != Qt.ApplicationState.ApplicationActive):
+                or (QGuiApplication.applicationState() != Qt.ApplicationState.ApplicationActive and not self._cmt_open())):
             return
         self.is_bar_visible = True
         bar_w = min(1500, int(screen_geom.width() * 0.85))
@@ -782,9 +808,12 @@ class PlayerView(QWidget):
         self.hide_timer.start()
 
     def _hide_floating_bar(self):
+        from PyQt6 import sip
+        if sip.isdeleted(self):
+            return
         from PyQt6.QtGui import QCursor, QGuiApplication
         if (self.is_bar_visible
-                and QGuiApplication.applicationState() == Qt.ApplicationState.ApplicationActive
+                and (QGuiApplication.applicationState() == Qt.ApplicationState.ApplicationActive or self._cmt_open())
                 and self.floating_bar.geometry().contains(QCursor.pos())):
             self.hide_timer.start()  # cursor is on the pill: keep it
             return
@@ -1115,6 +1144,7 @@ class PlayerView(QWidget):
         self._cloud_sync()
 
     def _show_web(self, target):
+        from hayate.core.web_embed import WEB_OK
         if not WEB_OK:
             self._on_stream_error("Web player unavailable (QtWebEngine or Widevine CDM missing).")
             return
@@ -1123,6 +1153,7 @@ class PlayerView(QWidget):
             if pm is not None and hasattr(pm, "pause"):
                 pm.pause()
             if getattr(self, "_web", None) is None:
+                from hayate.core.web_embed import WebPane
                 self._web = WebPane(self)
                 self.video_widget.layout().addWidget(self._web)
             self.video_widget.native_surface.hide()

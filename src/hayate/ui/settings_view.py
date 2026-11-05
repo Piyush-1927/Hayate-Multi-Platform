@@ -275,6 +275,21 @@ class SettingsView(QWidget):
         cat_layout.addWidget(self.cat_link_check)
         layout.addWidget(card_cat)
 
+        # Player card
+        card_mv = self._create_card("Player")
+        mv_layout = QVBoxLayout(card_mv)
+        mv_layout.setContentsMargins(24, 20, 24, 20); mv_layout.setSpacing(12)
+        mv_desc = QLabel("When on, the player and the details page are shown together on one page.")
+        mv_desc.setStyleSheet("color: #94a3b8; font-size: 12px;"); mv_desc.setWordWrap(True)
+        mv_layout.addWidget(mv_desc)
+        self.merged_view_check = QCheckBox("Merged player & details view")
+        self.merged_view_check.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.merged_view_check.setChecked(bool(load_settings().get("merged_view", False)))
+        self.merged_view_check.setStyleSheet(_orig_ss(self.adult_checkbox))
+        self.merged_view_check.toggled.connect(self._on_merged_view_toggled)
+        mv_layout.addWidget(self.merged_view_check)
+        layout.addWidget(card_mv)
+
         # Banner transition card
         card_tr = self._create_card("Banner transition")
         tr_layout = card_tr.layout() or QVBoxLayout(card_tr)
@@ -286,7 +301,7 @@ class SettingsView(QWidget):
                            ("Circle grow", "grow"), ("Circle shrink (outer)", "outer"),
                            ("Circle from center", "center"), ("Fade", "fade")):
             self.trans_combo.addItem(label, key)
-        i = self.trans_combo.findData(load_settings().get("banner_transition", "slide"))
+        i = self.trans_combo.findData(load_settings().get("banner_transition", "fade"))
         self.trans_combo.setCurrentIndex(max(i, 0))
         self.trans_combo.currentIndexChanged.connect(self._on_transition_changed)
         tr_row.addWidget(self.trans_combo)
@@ -298,7 +313,7 @@ class SettingsView(QWidget):
         self.dur_slider = QSlider(Qt.Orientation.Horizontal)
         self.dur_slider.setRange(100, 1500)
         self.dur_slider.setPageStep(100)
-        self.dur_slider.setValue(int(load_settings().get("banner_transition_ms", 550)))
+        self.dur_slider.setValue(int(load_settings().get("banner_transition_ms", 400)))
         self.dur_lbl = QLabel(f"{self.dur_slider.value()} ms")
         self.dur_lbl.setMinimumWidth(60)
         self.dur_slider.valueChanged.connect(self._on_duration_changed)
@@ -312,7 +327,7 @@ class SettingsView(QWidget):
         self.page_combo.setStyleSheet(_orig_ss(self.prov_combo))
         for label, key in (("Fade", "fade"), ("Slide", "slide"), ("Zoom", "zoom"), ("None", "none")):
             self.page_combo.addItem(label, key)
-        self.page_combo.setCurrentIndex(max(self.page_combo.findData(load_settings().get("page_transition", "fade")), 0))
+        self.page_combo.setCurrentIndex(max(self.page_combo.findData(load_settings().get("page_transition", "slide")), 0))
         self.page_combo.currentIndexChanged.connect(self._on_page_style_changed)
         pg_row.addWidget(self.page_combo)
         pg_row.addStretch()
@@ -323,7 +338,7 @@ class SettingsView(QWidget):
         self.page_slider = QSlider(Qt.Orientation.Horizontal)
         self.page_slider.setRange(100, 800)
         self.page_slider.setPageStep(50)
-        self.page_slider.setValue(int(load_settings().get("page_transition_ms", 260)))
+        self.page_slider.setValue(int(load_settings().get("page_transition_ms", 480)))
         self.page_lbl = QLabel(f"{self.page_slider.value()} ms")
         self.page_slider.valueChanged.connect(self._on_page_dur_changed)
         pd_row.addWidget(self.page_slider, 1)
@@ -617,6 +632,40 @@ class SettingsView(QWidget):
         """)
         self.clear_btn.clicked.connect(self._clear_cache)
         cache_layout.addWidget(self.clear_btn)
+
+        cc_desc = QLabel("Sign out of comments: clears cookies, the GitHub/giscus login and the saved login file. Close any open comments window first.")
+        cc_desc.setWordWrap(True)
+        cc_desc.setStyleSheet("color: #94a3b8; font-size: 12px;")
+        cache_layout.addWidget(cc_desc)
+        self.clear_cookies_btn = QPushButton("🗑 Clear Comment Cookies")
+        self.clear_cookies_btn.setFixedHeight(36)
+        self.clear_cookies_btn.setFixedWidth(220)
+        self.clear_cookies_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_cookies_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #212130;
+                color: #f87171;
+                border: 1.5px solid #f87171;
+                border-radius: 8px;
+                font-weight: 700;
+            }
+            QPushButton:hover { background-color: #f87171; color: #090a0f; }
+        """)
+
+        def _clear_cookies():
+            try:
+                from hayate.ui.comments_inline import clear_comment_login
+                clear_comment_login()
+                self.clear_cookies_btn.setText("Cleared")
+            except Exception:
+                import logging
+                logging.exception("clear comment cookies failed")
+                self.clear_cookies_btn.setText("Failed")
+
+        self.clear_cookies_btn.clicked.connect(_clear_cookies)
+        cache_layout.addWidget(self.clear_cookies_btn)
+        cc_desc.setVisible(False)
+        self.clear_cookies_btn.setVisible(False)  # hidden until the in-session clear works
         layout.addWidget(card_cache)
 
         # Card 5: Local Network Sharing (LAN)
@@ -982,7 +1031,7 @@ class SettingsView(QWidget):
 
     def refresh_providers(self):
         """Reloads providers from disk and syncs the dropdown without restarting."""
-        self.providers = load_providers()
+        self.providers = load_providers(force=True)
         current_key = self.settings.get("provider", "ytdlp")
         fell_back = False
 
@@ -1090,6 +1139,12 @@ class SettingsView(QWidget):
             (os.startfile(str(p_dir)) if sys.platform == "win32" else subprocess.Popen(["xdg-open", str(p_dir)]))
         except Exception:
             QMessageBox.information(self, "Plugin Folder", f"Plugin directory is located at:\n{p_dir}")
+
+    def _on_merged_view_toggled(self, on):
+        from hayate.core.settings import load_settings as _ld, save_settings as _sv
+        st = _ld()
+        st["merged_view"] = bool(on)
+        _sv(st)
 
     def _on_cat_link_toggled(self, on):
         from hayate.core.settings import load_settings as _ld, save_settings as _sv

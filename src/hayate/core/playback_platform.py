@@ -32,7 +32,12 @@ def detect_playback_platform() -> PlaybackPlatform:
         else os.environ.get("QT_QPA_PLATFORM", "").lower()
     )
 
-    if os_name in ("linux", "windows") and os.environ.get("HAYATE_VIDEO", "").lower() == "gl":
+    pref = os.environ.get("HAYATE_VIDEO", "").lower()
+    # GL render-API video is an ordinary Qt widget (scrolls, clips, layers correctly).
+    # It is the default on Linux, Windows and macOS; HAYATE_VIDEO=x11 keeps the old native-window path.
+    if os_name in ("linux", "windows", "macos") and (
+        pref == "gl" or pref not in ("x11", "wid", "native")
+    ):
         return PlaybackPlatform(os_name, qt_platform, "gl", True)
 
     if os_name == "windows":

@@ -19,6 +19,7 @@ DEFAULTS = {
         "TMS Anime",
     ],
     "allow_adult": False,
+    "merged_view": False,  # Player merged into the details view (not built yet)
     "catalogue_link": True,  # Catalogue: search + filters combine (off = using one clears the other)
     "quality": "best",
     "preferred_audio": "sub",  # "sub", "dub_eng", "dub_hin", "any_dub" or "custom:<name>"

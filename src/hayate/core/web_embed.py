@@ -1,5 +1,5 @@
 """Optional embedded web player (QtWebEngine + Widevine). WEB_OK is False when unavailable."""
-import glob, os, re
+import glob, os, re, sys
 
 CRAWL = bool(os.environ.get("HAYATE_CRAWL"))
 
@@ -10,17 +10,25 @@ _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
 
 
 def _find_cdm():
+    # App-managed copy (downloaded once, cached under ~/.cache/hayate/widevine)
+    try:
+        from .widevine_cdm import get_cdm_path
+        p = get_cdm_path()
+        if p and os.path.exists(p):
+            return str(p)
+    except Exception as e:
+        print("[web] widevine fetch failed:", e, flush=True)
+    # Fallback: system-installed Chromium/Chrome
     c = ["/usr/lib/chromium/WidevineCdm/_platform_specific/linux_x64/libwidevinecdm.so",
          "/opt/google/chrome/WidevineCdm/_platform_specific/linux_x64/libwidevinecdm.so"]
     c += glob.glob("/usr/lib/**/libwidevinecdm.so", recursive=True)
-    c += sorted(glob.glob(os.path.expanduser("~/.config/*/**/libwidevinecdm.so"), recursive=True), reverse=True)
     return next((p for p in c if os.path.exists(p)), None)
 
 
-_cdm = _find_cdm() if os.name == "posix" else None
+_cdm = _find_cdm() if sys.platform.startswith(("linux", "win")) else None
 if _cdm:
     os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
-        os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "") + f" --widevine-path={_cdm}").strip()
+        os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "") + f' --widevine-path="{_cdm}"').strip()
     try:
         from PyQt6.QtCore import QUrl
         from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage, QWebEngineSettings
@@ -28,6 +36,18 @@ if _cdm:
         WEB_OK = True
     except Exception:
         WEB_OK = False
+
+_STOP = {"the", "a", "an", "of", "and", "to", "in", "no", "wa", "ga", "wo", "ni", "de",
+         "season", "part", "cour", "tv", "ova", "movie", "movies", "show", "shows", "series",
+         "episode", "episodes", "watch", "online", "hd", "hotstar", "jiohotstar", "jio",
+         "disney", "streaming", "latest", "download", "official"}
+
+
+def _toks(t):
+    import unicodedata
+    t = unicodedata.normalize("NFKD", t or "").lower()
+    return [w for w in re.findall(r"[a-z0-9]+", t) if len(w) > 1 and not w.isdigit() and w not in _STOP]
+
 
 def _show_root(u):
     m = re.match(r"^(https?://[^/]+/in/(?:shows|movies)/[^/]+/\d+)", u or "")
@@ -76,6 +96,9 @@ if WEB_OK:
         def javaScriptConsoleMessage(self, level, msg, line, src):
             if msg.startswith("[hayate]"):
                 print("js:", msg, flush=True)
+                if msg.startswith("[hayate] no matching result") and not CRAWL:
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(0, self.parent()._not_available)
                 if msg.startswith("[hayate] open"):
                     self.parent()._autoplay = True
                 if msg.startswith("[hayate] season"):
@@ -83,7 +106,7 @@ if WEB_OK:
                     QTimer.singleShot(1000, self.parent()._press_ep)
                 if msg.startswith("[hayate] cr map "):
                     self.parent()._cr_got(msg[len("[hayate] cr map "):])
-                if self.parent()._cr_active and (msg.startswith("[hayate] no episode") or " not found" in msg):
+                if self.parent()._cr_active and (msg.startswith("[hayate] no episode") or (" not found" in msg and not msg.startswith("[hayate] lang"))):
                     from PyQt6.QtCore import QTimer
                     QTimer.singleShot(500, self.parent()._cr_next)
                 if msg.startswith("[hayate] more click "):
@@ -101,6 +124,8 @@ if WEB_OK:
                 if msg.startswith("[hayate] audio pick "):
                     x, y = (int(v) for v in msg.split("pick ", 1)[1].split()[:2])
                     self.parent()._real_click(x, y)
+                if msg.startswith("[hayate] audio user "):
+                    self.parent()._site_audio(msg[len("[hayate] audio user "):].strip())
                 if msg.startswith("[hayate] episode card"):
                     self.parent()._ep_clicked = True
                 if msg.startswith("[hayate] lang"):
@@ -123,6 +148,7 @@ if WEB_OK:
             super().__init__(owner)
             self._owner = owner
             self.setPage(_Page(_profile(), self))
+            self.settings().setAttribute(QWebEngineSettings.WebAttribute.ShowScrollBars, False)
             self.page().fullScreenRequested.connect(self._fs)
             self.urlChanged.connect(self._on_url)
 
@@ -186,6 +212,7 @@ if WEB_OK:
             if not getattr(self, "_aud_hooked", False):
                 self._aud_hooked = True
                 self.loadFinished.connect(self._aud_loaded)
+                self.loadFinished.connect(self._vt_loaded)
             url = url if ("/watch" in url and not CRAWL) else _show_root(url)
             self._ep = ep
             self._season = _season_for(key)
@@ -228,6 +255,9 @@ if WEB_OK:
         _aud_pending = False
 
         def _aud_loaded(self, ok):
+            if ok and "/watch" in self.url().toString() and not CRAWL:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(2500, self._aud_watch)
             if ok and self._aud_pending and "/watch" in self.url().toString():
                 self._aud_pending = False
                 from PyQt6.QtCore import QTimer
@@ -272,13 +302,67 @@ if WEB_OK:
                 json.dump(m, open(f, "w"), indent=1)
                 print("[web] saved", self._key, "->", s, flush=True)
 
+        def _vt_loaded(self, ok):
+            s = self.url().toString()
+            if CRAWL or not ok or not self._key or "/watch" in s or not re.search(r"/(shows|movies)/", s):
+                return
+            if getattr(self, "_vt_seen", None) == (s, self._key):
+                return
+            self._vt_seen = (s, self._key)
+            self._vt_try(s, 0)
+
+        def _vt_try(self, s, n):
+            if self.url().toString() != s:
+                return
+            js = r"""(function(){var m=document.querySelector('meta[property="og:title"]');return ((m&&m.content)||'')+' | '+document.title;})()"""
+            self.page().runJavaScript(js, 0, lambda t: self._vt_got(s, n, t))
+
+        def _vt_got(self, s, n, t):
+            from PyQt6.QtCore import QTimer
+            if self.url().toString() != s:
+                return
+            have = set(_toks(t))
+            if not have:
+                if n < 8:
+                    QTimer.singleShot(700, lambda: self._vt_try(s, n + 1))
+                return
+            want = _toks(self._key)
+            if not want:
+                return
+            hit = sum(1 for w in want if w in have)
+            print("[web] title check", repr(self._key), "vs", repr((t or "")[:70]), f"{hit}/{len(want)}", flush=True)
+            if hit < max(1, -(-len(want) * 7 // 10)):
+                self._not_available()
+
+        def _not_available(self, why=""):
+            import json
+            from PyQt6.QtCore import QUrl
+            f = os.path.expanduser("~/.config/hayate/webplayer/urls.json")
+            try:
+                m = json.load(open(f))
+                if m.pop(self._key, None) is not None:
+                    json.dump(m, open(f, "w"), indent=1)
+            except (OSError, ValueError):
+                pass
+            print("[web] not available:", self._key, flush=True)
+            self._vt_seen = None
+            self._autoplay, self._pending_watch = False, ""
+            self.load(QUrl("about:blank"))
+            self.hide()
+            o = getattr(self, "_owner", None)
+            try:
+                o._set_web_chrome(False)
+                o._on_stream_error("Not available on Disney+ Hotstar")
+            except Exception as e:
+                print("[web] not-available banner failed:", e, flush=True)
+
         def _open_top(self):
             import json, re
-            words = sorted(set(re.findall(r"[a-z0-9]{4,}", self._key.lower())))
+            words = sorted(set(_toks(self._key)))
             if not words:
                 return
             js = """(function(words){var n=0,t=setInterval(function(){
-              var need=Math.max(1,Math.ceil(words.length*0.6)),best=null,bs=0;
+              var need=Math.max(1,Math.ceil(words.length*0.7)),best=null,bs=0;
               [].slice.call(document.querySelectorAll('a[href*="/shows/"],a[href*="/movies/"]')).forEach(function(a){
                 var im=a.querySelector('img');
                 var h=(a.getAttribute('href')+' '+a.textContent+' '+(a.getAttribute('aria-label')||'')+' '+(im?im.alt:'')).toLowerCase();
@@ -317,6 +401,23 @@ if WEB_OK:
               if(++n>20){clearInterval(t);console.log('[hayate] lang '+lang+' not found');}
             },300);})(LANG);""".replace("LANG", json.dumps(lang))
             self.page().runJavaScript(js)
+
+        def _site_audio(self, label):
+            w = label.lower()
+            cb = getattr(getattr(self, "_owner", None), "audio_combo", None)
+            if cb is None:
+                print("[web] site audio", label, "- no audio_combo on", type(getattr(self, "_owner", None)).__name__, flush=True)
+                return
+            want = "hindi" if w.startswith("hindi") else "original" if w.startswith("japanese") else "eng" if w.startswith("english") else w
+            for i in range(cb.count()):
+                if want in cb.itemText(i).lower():
+                    if cb.currentIndex() != i:
+                        cb.blockSignals(True)
+                        cb.setCurrentIndex(i)
+                        cb.blockSignals(False)
+                        print("[web] app audio ->", cb.itemText(i), flush=True)
+                    return
+            print("[web] site audio", label, "- no match in", [cb.itemText(i) for i in range(cb.count())], flush=True)
 
         def _aud_watch(self):
             self.page().runJavaScript(r"""(function(){if(window.__hyAud)return;window.__hyAud=1;
@@ -409,9 +510,9 @@ if WEB_OK:
 
         def _cr_discover(self):
             if self._cr_langs is None:
-                order = [x.strip() for x in os.environ.get("HAYATE_CRAWL_LANGS", "Hindi,English,Japanese Original").split(",") if x.strip()]
+                order = [x.strip() for x in os.environ.get("HAYATE_CRAWL_LANGS", "Hindi,Japanese Original").split(",") if x.strip()]
                 cur = (self._lang or "").lower()
-                self._cr_langs = [x for x in order if x.lower() != cur]
+                self._cr_langs = []
             print("[web] crawl: scanning seasons of", self._cr_root, self._lang, flush=True)
             self.page().runJavaScript(r"""(function(){
  var acc={};
@@ -489,6 +590,14 @@ if WEB_OK:
 
         def _cr_next(self):
             from PyQt6.QtCore import QTimer, QUrl
+            import json, os
+            try:
+                _em = json.load(open(os.path.expanduser("~/.config/hayate/webplayer/episodes.json")))
+            except (OSError, ValueError):
+                _em = {}
+            while self._cr_targets and self._cr_targets[0][2] in _em:
+                print("[web] crawl: skip cached", self._cr_targets[0][2].split("|", 1)[1], flush=True)
+                self._cr_targets.pop(0)
             if not self._cr_targets:
                 self._cr_active = False
                 print("[web] crawl: finished", self._cr_root, self._lang, flush=True)
@@ -525,7 +634,7 @@ if WEB_OK:
                         return
             ep = int(getattr(self, "_ep", 1) or 1)
             sn = int(getattr(self, "_season", 0) or 0)
-            js = r"""(function(want,sn){var n=0,t=setInterval(function(){
+            js = r"""(function(want,sn){var n=0,lm=-9,t=setInterval(function(){
               function ok(x){
                 if(/^\s*(resume|watch|play|continue|start)/i.test(x)) return false;
                 var m=x.match(/\bS\s*(\d+)\s*E\s*(\d+)\b/i);
@@ -536,7 +645,17 @@ if WEB_OK:
               var c=[].slice.call(document.querySelectorAll('a,button,[role=button],li,div')).filter(function(e){
                 var x=(e.innerText||'').trim();return x&&x.length<140&&ok(x);});
               c.sort(function(a,b){return a.innerText.length-b.innerText.length;});
-              if(c.length){clearInterval(t);var card=c[0];
+              if(c.length){var cd=c[0];for(var j=0;j<6&&cd&&!cd.querySelector('img');j++){cd=cd.parentElement;}
+                var cov=(function(){var m2=[].slice.call(document.querySelectorAll('button,a,[role=button],div,span')).filter(function(e){
+                  var x=(e.innerText||'').trim();return e.offsetParent!==null&&x.length<30&&/^(show|view|load|see)\s*(more|all)/i.test(x);})[0];
+                  if(!m2)return null;var b=m2.getBoundingClientRect();
+                  return [c[0],cd].some(function(z){if(!z)return false;var r=z.getBoundingClientRect();
+                    return b.top<r.bottom&&b.bottom>r.top&&b.left<r.right&&b.right>r.left;})?m2:null;})();
+                if(cov){if(n-lm>=5){lm=n;cov.scrollIntoView({block:'center'});setTimeout(function(){var q=cov.getBoundingClientRect();
+                    console.log('[hayate] more click '+Math.round(q.left+q.width/2)+' '+Math.round(q.top+q.height/2));},300);}
+                  if(++n>60){clearInterval(t);console.log('[hayate] no episode '+want+' card; covered by View More');}
+                  return;}
+                clearInterval(t);var card=c[0];
                 for(var i=0;i<6&&card&&!card.querySelector('img');i++){card=card.parentElement;}
                 var tg=(card&&card.querySelector('img'))||c[0];
                 tg.scrollIntoView({block:'center'});

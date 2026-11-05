@@ -175,13 +175,18 @@ class UpcomingDetailsView(QWidget):
         self.meta_lbl.setText(f"{anime.year or 'TBA'}  |  {eps_info}  |  {genres}")
         self.desc_lbl.setText(clean_html(anime.description or "No description available."))
 
-        if hasattr(self, "_poster_reply") and self._poster_reply:
+        _old = getattr(self, "_poster_reply", None)
+        self._poster_reply = None
+        if _old is not None:
             try:
-                self._poster_reply.abort()
+                _old.finished.disconnect()
             except Exception:
                 pass
-            self._poster_reply.deleteLater()
-            self._poster_reply = None
+            try:
+                _old.abort()
+            except Exception:
+                pass
+            _old.deleteLater()
 
         if anime.cover_url:
             req = QNetworkRequest(QUrl(anime.cover_url))

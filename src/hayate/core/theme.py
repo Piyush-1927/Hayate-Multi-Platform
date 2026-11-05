@@ -38,13 +38,6 @@ QLabel { color:$text_primary; }
 QFrame[card="true"] { background:$card_background; border:${card_border_width}px solid $card_border; border-radius:12px; }
 QPushButton { background:$button_background; color:$button_text; border:1px solid $ui_border; border-radius:8px; padding:6px 12px; }
 QPushButton:hover { background:$hover; }
-QScrollBar:vertical { background:transparent; width:12px; margin:0; }
-QScrollBar:horizontal { background:transparent; height:12px; margin:0; }
-QScrollBar::handle:vertical { background:$ui_border; border-radius:5px; min-height:30px; margin:2px; }
-QScrollBar::handle:horizontal { background:$ui_border; border-radius:5px; min-width:30px; margin:2px; }
-QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background:$accent; }
-QScrollBar::add-line, QScrollBar::sub-line { width:0; height:0; }
-QScrollBar::add-page, QScrollBar::sub-page { background:transparent; }
 QPushButton:checked { background:$selected; border-color:$accent; }
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background:$card_background; color:$text_primary; border:1px solid $ui_border; border-radius:6px; padding:4px 8px; }
 QComboBox QAbstractItemView { background:$card_background; color:$text_primary; selection-background-color:$selected; }
@@ -109,7 +102,7 @@ class ThemeManager(QObject):
         return {**t, "text_on_accent": on}
 
     def c(self, role, a=1.0):  # QColor for paintEvent
-        q = QColor(self.derived()[role]); q.setAlphaF(a); return q
+        q = QColor(self.derived()[role]); q.setAlphaF(a / 255 if a > 1 else a); return q
 
     def rgba(self, role, a=1.0, mark=True):  # for QSS strings
         q = self.c(role, a); s = f"rgba({q.red()},{q.green()},{q.blue()},{q.alpha()})"

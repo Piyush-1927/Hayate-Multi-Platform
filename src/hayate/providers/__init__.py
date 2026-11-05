@@ -23,7 +23,18 @@ def _validate(inst: StreamProvider) -> str:
     return ""
 
 
-def load_providers() -> dict:
+_PROVIDER_CACHE = None
+
+
+def load_providers(force: bool = False) -> dict:
+    """Scanned once per run and cached; force=True rescans the disk."""
+    global _PROVIDER_CACHE
+    if _PROVIDER_CACHE is None or force:
+        _PROVIDER_CACHE = _scan_providers()
+    return dict(_PROVIDER_CACHE)
+
+
+def _scan_providers() -> dict:
     """Loads built-in providers, user drop-in plugins from ~/.config/hayate/providers/,
 
     and falls back to PseudoProvider if no real provider is available.

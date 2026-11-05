@@ -629,8 +629,8 @@ class AnimatedStack(QStackedWidget):
 
     def setCurrentIndex(self, i):
         cfg = _load_cfg()
-        style = cfg.get("page_transition", "fade")
-        ms = int(cfg.get("page_transition_ms", 260))
+        style = cfg.get("page_transition", "slide")
+        ms = int(cfg.get("page_transition_ms", 480))
         cur = self.currentIndex()
         if style == "none" or ms <= 0 or i == cur or cur < 0 or not self.isVisible():
             self._a.stop()
@@ -726,7 +726,7 @@ class HeroSpotlightBanner(QWidget):
         self.current_anime_id: int | None = None
 
         self.anim = QPropertyAnimation(self, b"slideOffset")
-        self.anim.setDuration(550)
+        self.anim.setDuration(400)
         self.anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._veil = _BannerVeil(self)
         self._tr_ms = 550
@@ -828,8 +828,8 @@ class HeroSpotlightBanner(QWidget):
 
     def _begin_transition(self) -> str:
         cfg = _load_cfg()
-        style = cfg.get("banner_transition", "slide")
-        self._tr_ms = int(cfg.get("banner_transition_ms", 550))
+        style = cfg.get("banner_transition", "fade")
+        self._tr_ms = int(cfg.get("banner_transition_ms", 400))
         if style not in ("wipe", "grow", "outer", "center", "fade") \
                 or not self.isVisible() or self.banner_pixmap is None:
             self._veil_anim.stop()
@@ -1333,6 +1333,290 @@ def _work_area(screen):
     return a
 
 
+from PyQt6.QtCore import Qt as _TQt, pyqtSignal as _Tsig, QThread as _TThread
+from PyQt6.QtGui import QPixmap as _TPix, QImage as _TImg, QFontMetrics as _TFM
+
+
+class _TopWorker(_TThread):
+    done = _Tsig(str, object)
+
+    def __init__(self, period):
+        super().__init__()
+        self.period = period
+
+    def run(self):
+        try:
+            from hayate.core.anilist import get_top_sync
+            items = get_top_sync(self.period, limit=12)
+        except Exception:
+            import traceback; traceback.print_exc()
+            items = []
+        self.done.emit(self.period, items)
+
+
+class _TopRow(QWidget):
+    clicked = _Tsig(object)
+
+    def __init__(self, rank, anime, parent=None):
+        super().__init__(parent)
+        self.anime = anime
+        self.setCursor(_TQt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(_S(92))
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 4, 0, 4)
+        lay.setSpacing(_S(10))
+
+        num = QLabel(str(rank))
+        num.setFixedWidth(_S(30))
+        num.setAlignment(_TQt.AlignmentFlag.AlignCenter)
+        col = {2: "#e11d48", 3: "#b0703c"}.get(rank, theme.rgba("accent") if rank <= 3 else theme.rgba("text_primary", 0.5))
+        num.setStyleSheet("font-size: 20px; font-weight: 800; color: %s; background: transparent; border: none;" % col)
+        lay.addWidget(num)
+
+        self.poster = QLabel()
+        self.poster.setFixedSize(_S(60), _S(84))
+        self.poster.setStyleSheet("background: %s; border-radius: 6px; border: none;" % theme.rgba("text_primary", 0.08))
+        lay.addWidget(self.poster)
+        if anime.cover_url:
+            image_mgr.load(anime.cover_url, self._on_img, priority=50)
+
+        txt = QVBoxLayout()
+        txt.setSpacing(2)
+        txt.addStretch()
+        title = QLabel(_TFM(self.font()).elidedText(anime.title, _TQt.TextElideMode.ElideRight, _S(250)))
+        title.setToolTip(anime.title)
+        title.setStyleSheet("font-size: 15px; font-weight: 700; color: %s; background: transparent; border: none;" % theme.rgba("text_primary"))
+        bits = [b for b in (anime.format, ("★ %.1f" % (anime.average_score / 10)) if anime.average_score else None) if b]
+        sub = QLabel("  ·  ".join(bits))
+        sub.setStyleSheet("font-size: 12px; color: %s; background: transparent; border: none;" % theme.rgba("text_primary", 0.55))
+        txt.addWidget(title)
+        txt.addWidget(sub)
+        txt.addStretch()
+        lay.addLayout(txt, 1)
+
+    def _on_img(self, *a):
+        try:
+            img = next((x for x in a if isinstance(x, (_TPix, _TImg))), None)
+            if img is None:
+                return
+            pm = img if isinstance(img, _TPix) else _TPix.fromImage(img)
+            w, h = self.poster.width(), self.poster.height()
+            pm = pm.scaled(w, h, _TQt.AspectRatioMode.KeepAspectRatioByExpanding,
+                           _TQt.TransformationMode.SmoothTransformation)
+            self.poster.setPixmap(pm.copy((pm.width() - w) // 2, (pm.height() - h) // 2, w, h))
+        except RuntimeError:
+            pass  # row already deleted
+
+    def mousePressEvent(self, e):
+        if e.button() == _TQt.MouseButton.LeftButton:
+            self.clicked.emit(self.anime)
+        super().mousePressEvent(e)
+
+
+from PyQt6.QtGui import QPainter as _TPnt, QPainterPath as _TPath, QColor as _TCol
+from PyQt6.QtCore import QRectF as _TRF
+
+
+def _top_pix(args):
+    img = next((x for x in args if isinstance(x, (_TPix, _TImg))), None)
+    if img is None:
+        return None
+    return img if isinstance(img, _TPix) else _TPix.fromImage(img)
+
+
+class _TopFeatured(QWidget):
+    clicked = _Tsig(object)
+
+    def __init__(self, anime, parent=None):
+        super().__init__(parent)
+        self.anime = anime
+        self._bg = None
+        self.setCursor(_TQt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(_S(140))
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(_S(14))
+        self.poster = QLabel()
+        self.poster.setFixedSize(_S(76), _S(108))
+        self.poster.setStyleSheet("background: rgba(255,255,255,0.08); border-radius: 8px; border: none;")
+        lay.addWidget(self.poster)
+        txt = QVBoxLayout()
+        txt.setSpacing(4)
+        txt.addStretch()
+        tag = QLabel("#1 MOST POPULAR")
+        tag.setStyleSheet("font-size: 11px; font-weight: 800; letter-spacing: 1.5px; color: %s; background: transparent; border: none;" % theme.rgba("accent"))
+        title = QLabel(anime.title)
+        title.setWordWrap(True)
+        title.setStyleSheet("font-size: 17px; font-weight: 800; color: #ffffff; background: transparent; border: none;")
+        bits = [b for b in (anime.format, ("★ %.1f" % (anime.average_score / 10)) if anime.average_score else None) if b]
+        sub = QLabel("  ·  ".join(bits))
+        sub.setStyleSheet("font-size: 12px; color: rgba(255,255,255,0.7); background: transparent; border: none;")
+        for w in (tag, title, sub):
+            txt.addWidget(w)
+        txt.addStretch()
+        lay.addLayout(txt, 1)
+        if anime.cover_url:
+            image_mgr.load(anime.cover_url, self._on_poster, priority=50)
+        bg = anime.banner_url or anime.cover_url
+        if bg:
+            image_mgr.load(bg, self._on_bg, priority=50)
+
+    def _on_poster(self, *a):
+        try:
+            pm = _top_pix(a)
+            if pm is None:
+                return
+            w, h = self.poster.width(), self.poster.height()
+            pm = pm.scaled(w, h, _TQt.AspectRatioMode.KeepAspectRatioByExpanding, _TQt.TransformationMode.SmoothTransformation)
+            self.poster.setPixmap(pm.copy((pm.width() - w) // 2, (pm.height() - h) // 2, w, h))
+        except RuntimeError:
+            pass
+
+    def _on_bg(self, *a):
+        try:
+            pm = _top_pix(a)
+            if pm is not None:
+                self._bg = pm.scaledToWidth(14, _TQt.TransformationMode.SmoothTransformation)
+                self._blur = None
+                self.update()
+        except RuntimeError:
+            pass
+
+    def paintEvent(self, e):
+        p = _TPnt(self)
+        p.setRenderHint(_TPnt.RenderHint.Antialiasing)
+        path = _TPath()
+        path.addRoundedRect(_TRF(self.rect()), 10, 10)
+        p.setClipPath(path)
+        p.fillRect(self.rect(), _TCol("#12121c"))
+        if self._bg is not None:
+            c = getattr(self, '_blur', None)
+            if c is None or c[0] != self.size():
+                mid = self._bg.scaledToWidth(70, _TQt.TransformationMode.SmoothTransformation)
+                sc = mid.scaled(self.size(), _TQt.AspectRatioMode.KeepAspectRatioByExpanding, _TQt.TransformationMode.SmoothTransformation)
+                self._blur = c = (self.size(), sc)
+            sc = c[1]
+            p.drawPixmap((self.width() - sc.width()) // 2, (self.height() - sc.height()) // 2, sc)
+        p.fillRect(self.rect(), _TCol(10, 10, 20, 140))
+        p.end()
+
+    def mousePressEvent(self, e):
+        if e.button() == _TQt.MouseButton.LeftButton:
+            self.clicked.emit(self.anime)
+        super().mousePressEvent(e)
+
+
+class TopAnimePanel(QFrame):
+    anime_clicked = _Tsig(object)
+    _PERIODS = (("day", "Day"), ("week", "Week"), ("month", "Month"))
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("shelf_frame")
+        self.setFixedWidth(_S(430))
+        from PyQt6.QtWidgets import QSizePolicy as _QSP
+        self.setSizePolicy(_QSP.Policy.Fixed, _QSP.Policy.Expanding)
+        self.setStyleSheet("""
+            QFrame#shelf_frame {
+                background-color: #1e1e2d;
+                border-radius: 16px;
+                border: 1.5px solid #2f2f44;
+            }
+        """)
+        self._period = "day"
+        self._items = []
+        self._cache = {}
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 14)
+        lay.setSpacing(8)
+        head = QHBoxLayout()
+        head.setSpacing(4)
+        self.title_lbl = QLabel("Top anime")
+        self.title_lbl.setStyleSheet("font-size: 19px; font-weight: 800; color: #38bdf8; background: transparent; border: none;")
+        head.addWidget(self.title_lbl)
+        head.addStretch()
+        self._tabs = {}
+        for key, label in self._PERIODS:
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setCursor(_TQt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: self.set_period(k))
+            self._tabs[key] = b
+            head.addWidget(b)
+        lay.addLayout(head)
+
+        self.rows_box = QVBoxLayout()
+        self.rows_box.setSpacing(0)
+        lay.addLayout(self.rows_box)
+        self.status = QLabel("Loading…")
+        self.status.setStyleSheet("color: #8b8ba7; background: transparent; border: none; padding: 12px 0;")
+        lay.addWidget(self.status)
+        lay.addStretch(1)
+
+        self._style_tabs()
+        theme.changed.connect(self._on_theme)
+        QTimer.singleShot(1200, self.reload)  # after Home's own fetch starts
+
+    def _on_theme(self):
+        self._style_tabs()
+        self._render(self._items)
+
+    def _style_tabs(self):
+        acc, txt = theme.rgba("accent"), theme.rgba("text_primary")
+        for k, b in self._tabs.items():
+            on = k == self._period
+            b.setChecked(on)
+            b.setStyleSheet(
+                "QPushButton { background: %s; color: %s; border: none; border-radius: 6px;"
+                " padding: 4px 10px; font-weight: 700; font-size: 12px; }"
+                " QPushButton:hover { color: %s; }"
+                % (acc if on else "transparent", "#ffffff" if on else theme.rgba("text_primary", 0.6), "#ffffff" if on else txt))
+
+    def set_period(self, key):
+        if key == self._period:
+            return
+        self._period = key
+        self._style_tabs()
+        if key in self._cache:
+            self._render(self._cache[key])
+        self._fetch(key)
+
+    def reload(self):
+        self._fetch(self._period)
+
+    def _fetch(self, period):
+        w = _TopWorker(period)
+        w.done.connect(self._on_done)
+        run_worker(w)
+
+    def _on_done(self, period, items):
+        if items:
+            self._cache[period] = items
+        if period != self._period:
+            return
+        if items:
+            self._render(items)
+        elif not self._items:
+            self.status.setText("Couldn't load. Check your connection.")
+            self.status.setVisible(True)
+            QTimer.singleShot(15000, self.reload)
+
+    def _render(self, items):
+        self._items = items
+        while self.rows_box.count():
+            w = self.rows_box.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        self.status.setVisible(not items)
+        for i, a in enumerate(items, 1):
+            row = _TopFeatured(a) if i == 1 else _TopRow(i, a)
+            row.clicked.connect(self.anime_clicked.emit)
+            self.rows_box.addWidget(row)
+            if i == 1:
+                self.rows_box.addSpacing(8)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1494,41 +1778,62 @@ class MainWindow(QMainWindow):
         self.root_layout.addWidget(self.hero_banner)
         self.root_layout.addSpacing(32)
 
+        self.left_col = QVBoxLayout()
+        self.left_col.setContentsMargins(0, 0, 0, 0)
+        self.left_col.setSpacing(0)
+
         # 2. Continue Watching Shelf
         self.history_shelf = AnimeShelfWidget("Continue Watching", title_color="#38bdf8", removable=True, view_all=True)
         self._connect_shelf(self.history_shelf)
         self.history_shelf.card_remove_requested.connect(self._remove_history_item)
         self.history_shelf.view_all_requested.connect(self.open_history_view)
-        self.root_layout.addWidget(self.history_shelf)
+        self.left_col.addWidget(self.history_shelf)
         self.history_spacer = QWidget()
         self.history_spacer.setFixedHeight(32)
-        self.root_layout.addWidget(self.history_spacer)
+        self.left_col.addWidget(self.history_spacer)
 
         # 3. Trending Shelf
         self.trending_shelf = AnimeShelfWidget("Trending")
         self._connect_shelf(self.trending_shelf)
-        self.root_layout.addWidget(self.trending_shelf)
-        self.root_layout.addSpacing(32)
+        self.left_col.addWidget(self.trending_shelf)
+        self.left_col.addSpacing(32)
 
         # 4. New Anime Releases Shelf
         self.new_releases_shelf = AnimeShelfWidget("New Anime Releases")
         self._connect_shelf(self.new_releases_shelf)
-        self.root_layout.addWidget(self.new_releases_shelf)
-        self.root_layout.addSpacing(32)
+        self.left_col.addWidget(self.new_releases_shelf)
+
+        self.full_col = QVBoxLayout()
+        self.full_col.setContentsMargins(0, 0, 0, 0)
+        self.full_col.setSpacing(0)
 
         # 5. Just Finished Airing Shelf
         self.finished_shelf = AnimeShelfWidget("Just Finished Airing")
         self._connect_shelf(self.finished_shelf)
-        self.root_layout.addWidget(self.finished_shelf)
-        self.root_layout.addSpacing(32)
+        self.full_col.addWidget(self.finished_shelf)
+        self.full_col.addSpacing(32)
 
         # 6. Upcoming Animes Shelf
         self.upcoming_shelf = AnimeShelfWidget("Upcoming Animes (Confirmed)")
         self._connect_shelf(self.upcoming_shelf)
-        self.root_layout.addWidget(self.upcoming_shelf)
+        self.full_col.addWidget(self.upcoming_shelf)
+        self.full_col.addSpacing(32)
+
+
+
+        self.top_panel = TopAnimePanel()
+        self.top_panel.anime_clicked.connect(self.open_details_view)
+        right_col = QVBoxLayout()
+        right_col.setContentsMargins(0, 0, 0, 0)
+        right_col.addWidget(self.top_panel, 1)
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(24)
+        body.addLayout(self.left_col, 1)
+        body.addLayout(right_col, 0)
+        self.root_layout.addLayout(body)
         self.root_layout.addSpacing(32)
-
-
+        self.root_layout.addLayout(self.full_col)
 
         self.root_layout.addStretch()
         self.stack.addWidget(self.home_scroll)
@@ -1538,12 +1843,28 @@ class MainWindow(QMainWindow):
         self.details_view.back_requested.connect(self._back_from_details)
         self.details_view.relation_selected.connect(self.open_by_id)
         self.details_view.play_requested.connect(self.open_player_view)
-        self.stack.addWidget(self.details_view)
 
         # Player View (Dedicated Theater Page)
         self.player_view = PlayerView(self.player)
         self.player_view.back_requested.connect(self.on_back_to_details)
+        self.stack.addWidget(self.details_view)
         self.stack.addWidget(self.player_view)
+        self._merged = None
+        self._player_page = self.player_view
+
+        # Whenever details opens an anime, also fill the merged page if the toggle is on
+        _orig_sa = self.details_view.set_anime
+
+        def _sa(anime, *a, **k):
+            _orig_sa(anime, *a, **k)
+            if self._use_merged():
+                mv = self._ensure_merged()
+                mv.prepare_anime(anime)
+                mv.update_related(anime)
+
+        self.details_view.set_anime = _sa
+        self.stack.currentChanged.connect(self._on_stack_changed_merged)
+        self.stack.currentChanged.connect(self._claim_media_controls)
 
         # Schedule View
         self.schedule_view = ScheduleView(self.player)
@@ -1603,12 +1924,62 @@ class MainWindow(QMainWindow):
 
         self.load_home()
 
+    def _use_merged(self):
+        from hayate.core.settings import load_settings
+        return bool(load_settings().get("merged_view", False))
+
+    @property
+    def _details_page(self):
+        if self._merged is not None and self._use_merged():
+            return self._merged
+        return self.details_view
+
+    def _ensure_merged(self):
+        if self._merged is None:
+            from hayate.ui.merged_view import MergedPlayerView
+            mv = MergedPlayerView(self.player)
+            mv._details = self.details_view
+            self.stack.addWidget(mv)
+            self._merged = mv
+        return self._merged
+
+    def _claim_media_controls(self, *_):
+        f = getattr(self.stack.currentWidget(), "_ensure_media_controls", None)
+        if f:
+            f()
+
+    def _on_stack_changed_merged(self, *_):
+        if self._merged is not None and self.stack.currentWidget() is not self._merged:
+            QTimer.singleShot(600, self._kill_merged)
+
+    def _kill_merged(self):
+        mv = self._merged
+        if mv is None or self.stack.currentWidget() is mv:
+            return
+        self._merged = None
+        try:
+            if not mv._playback_shutdown:
+                mv._shutdown_playback()
+        except Exception:
+            pass
+        self.stack.removeWidget(mv)
+        mv.deleteLater()
+
     def open_player_view(self, anime, ep: int):
+        if self._merged is not None:
+            self._merged.show_player(True)
+        if self._merged is not None and self._use_merged():
+            self._merged.prepare_anime(anime)
+            self._merged.play_episode(ep)
+            self.stack.setCurrentWidget(self._merged)
+            return
         self.player_view.open_anime(anime, ep)
         self.stack.setCurrentWidget(self.player_view)
 
     def on_back_to_details(self):
-        self.stack.setCurrentWidget(self.details_view)
+        if self._merged is not None:
+            self._merged.show_player(False)
+        self.stack.setCurrentWidget(self._details_page)
 
     def _connect_shelf(self, shelf: AnimeShelfWidget):
         shelf.card_clicked.connect(self.open_details_view)
@@ -1644,6 +2015,11 @@ class MainWindow(QMainWindow):
             import logging
             logging.exception("Error shutting down playback on application exit")
 
+        try:
+            if getattr(self, '_merged', None) is not None:
+                self._merged._shutdown_playback()
+        except Exception:
+            pass
         _SPOTLIGHT_PIX_CACHE.clear()
         try:
             self.spotlight_timer.stop()
@@ -1924,7 +2300,7 @@ class MainWindow(QMainWindow):
         cur = self.stack.currentWidget()
         if cur in (self.history_view, self.library_view):
             self._details_origin = cur
-        elif cur not in (self.details_view, self.upcoming_view, self.player_view):
+        elif cur not in (self.details_view, self.upcoming_view, self.player_view, self._details_page):
             self._details_origin = None
         self.spotlight_timer.stop()
         self.hover_preview.hide()
@@ -1943,7 +2319,7 @@ class MainWindow(QMainWindow):
                 self._enrich_details(anime.id)
             return
         self.details_view.set_anime(anime)
-        self.stack.setCurrentIndex(1)
+        self.stack.setCurrentWidget(self._details_page)
         if incomplete(anime):
             self._enrich_details(anime.id)
 
@@ -1958,7 +2334,7 @@ class MainWindow(QMainWindow):
             self.__dict__.setdefault('_enriched_ids', set()).add(media.id)
             for view in (self.upcoming_view, self.details_view):
                 current = getattr(view, "anime", None)
-                if current is not None and current.id == media.id and self.stack.currentWidget() is view:
+                if current is not None and current.id == media.id and (self.stack.currentWidget() is view or (view is self.details_view and self._merged is not None and self.stack.currentWidget() is self._merged)):
                     view.set_anime(media)
 
         worker.data_ready.connect(on_done)
@@ -1973,6 +2349,8 @@ class MainWindow(QMainWindow):
         self.upcoming_shelf.setVisible(True)
 
         self._refresh_history_shelf()
+        if getattr(self, 'top_panel', None) is not None:
+            self.top_panel.reload()
         self.stack.setCurrentIndex(0)
         self.fetch_home_content()
 

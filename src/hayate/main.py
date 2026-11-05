@@ -1,5 +1,6 @@
 import os
-import sys
+import sys, traceback
+sys.excepthook = lambda t,v,tb: traceback.print_exception(t,v,tb)
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
@@ -11,7 +12,9 @@ def _autoscale():
   # Skipped when QT_SCALE_FACTOR is already set or HAYATE_NO_AUTOSCALE=1.
   if not (sys.platform.startswith("linux") and os.environ.get("DISPLAY")):
     return
-  if "xcb" not in os.environ.get("QT_QPA_PLATFORM", "xcb"):
+  qpa = os.environ.get("QT_QPA_PLATFORM", "")
+  # Qt uses xcb when asked to, or when unset on a session without a Wayland display.
+  if not (("xcb" in qpa) if qpa else not os.environ.get("WAYLAND_DISPLAY")):
     return
   if os.environ.get("QT_SCALE_FACTOR") or os.environ.get("HAYATE_NO_AUTOSCALE"):
     return
@@ -52,19 +55,24 @@ def _autoscale():
 
 
 def main():
-  # Linux: libmpv embeds through an X11 window id, so default to Qt's xcb platform
-  # (XWayland on Wayland). A user-set QT_QPA_PLATFORM or a missing X server wins.
-  if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
-    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+  # Qt picks its own platform (native Wayland, or xcb on X11). Set QT_QPA_PLATFORM=xcb to force X11.
   _autoscale()
+  from PyQt6.QtCore import Qt as _Qt, QCoreApplication as _QCA
+  _QCA.setAttribute(_Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
   app = QApplication(sys.argv)
 
   from hayate.core.theme import theme
-  app.setStyleSheet(theme.qss())
-  theme.changed.connect(lambda: app.setStyleSheet(theme.qss()))
+  from hayate.ui.autohide_scrollbar import install as install_autohide_scrollbar, BASE_QSS as SCROLLBAR_QSS
+  def _apply_qss():
+    app.setStyleSheet(theme.qss() + SCROLLBAR_QSS)
+  _apply_qss()
+  theme.changed.connect(_apply_qss)
+  install_autohide_scrollbar(app)
   icon_file = Path(__file__).resolve().parents[2] / 'app_icon.png'
   if icon_file.exists():
       app.setWindowIcon(QIcon(str(icon_file)))
+  elif not QIcon.fromTheme("hayate").isNull():
+      app.setWindowIcon(QIcon.fromTheme("hayate"))
 
   # Neutral style base prevents theme engine border artifacts on KDE
   app.setStyle("Fusion")

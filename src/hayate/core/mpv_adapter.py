@@ -129,7 +129,21 @@ class MpvPlayerAdapter(QObject):
             raise RuntimeError(f"Network proxy error: {exc}") from exc
 
         try:
-            self._mpv = mpv.MPV(**options)
+            for _try in range(12):
+                try:
+                    self._mpv = mpv.MPV(**options)
+                    break
+                except Exception as _exc:
+                    _bad = None
+                    try:
+                        _bad = _exc.args[2][1].decode().replace("-", "_")
+                    except Exception:
+                        pass
+                    if _bad in options and "does not exist" in str(_exc):
+                        print(f"[mpv] option unsupported, dropping: {_bad}", flush=True)
+                        options.pop(_bad)
+                        continue
+                    raise
             self._mpv.observe_property("time-pos", self._observe_property)
             self._mpv.observe_property("duration", self._observe_property)
             self._mpv.observe_property("pause", self._observe_property)
