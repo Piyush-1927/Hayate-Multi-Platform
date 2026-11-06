@@ -80,3 +80,18 @@ __pycache__/
 
 # local OAuth credentials
 src/hayate/core/google_secrets.py
+
+# local backups and generated files
+*.pre-*
+*.pre_*
+*.glbak
+*.macbak
+*.defbak
+*.cardbak
+*.clrbak
+*.before-revert
+ui_backup_*/
+build-backups/
+release-backup-*/
+src/mode=sub
+packaging/windows/webengine-hash.iss

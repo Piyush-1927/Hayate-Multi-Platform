@@ -1810,8 +1810,13 @@ class MainWindow(QMainWindow):
         # 5. Just Finished Airing Shelf
         self.finished_shelf = AnimeShelfWidget("Just Finished Airing")
         self._connect_shelf(self.finished_shelf)
-        self.full_col.addWidget(self.finished_shelf)
-        self.full_col.addSpacing(32)
+        self.finished_group = QWidget()
+        self._fg_lay = QVBoxLayout(self.finished_group)
+        self._fg_lay.setSpacing(0)
+        self._fg_lay.setContentsMargins(0, 0, 0, 32)
+        self._fg_lay.addWidget(self.finished_shelf)
+        self._finished_in_left = False
+        self.full_col.addWidget(self.finished_group)
 
         # 6. Upcoming Animes Shelf
         self.upcoming_shelf = AnimeShelfWidget("Upcoming Animes (Confirmed)")
@@ -1926,7 +1931,7 @@ class MainWindow(QMainWindow):
 
     def _use_merged(self):
         from hayate.core.settings import load_settings
-        return bool(load_settings().get("merged_view", False))
+        return not bool(load_settings().get("classic_view", False))
 
     @property
     def _details_page(self):
@@ -2213,15 +2218,32 @@ class MainWindow(QMainWindow):
             if sh is not None and hasattr(sh, "apply_scale"):
                 sh.apply_scale()
 
+    def _place_finished(self, in_left):
+        if getattr(self, "_finished_in_left", None) == in_left:
+            return
+        self._finished_in_left = in_left
+        g = self.finished_group
+        if in_left:
+            self.full_col.removeWidget(g)
+            self._fg_lay.setContentsMargins(0, 32, 0, 0)
+            self.left_col.addWidget(g)
+        else:
+            self.left_col.removeWidget(g)
+            self._fg_lay.setContentsMargins(0, 0, 0, 32)
+            self.full_col.insertWidget(0, g)
+        g.show()
+
     def _refresh_history_shelf(self):
         recent = history_mgr.get_recent_history(8)
         if not recent:
             self.history_shelf.setVisible(False)
             self.history_spacer.setVisible(False)
+            self._place_finished(True)
             return
 
         self.history_shelf.setVisible(True)
         self.history_spacer.setVisible(True)
+        self._place_finished(False)
         shelf_data = []
         for h in recent:
             total = max(h.get("total_episodes") or 1, h.get("last_episode", 1), 1)

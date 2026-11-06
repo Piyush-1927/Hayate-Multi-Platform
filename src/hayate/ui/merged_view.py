@@ -141,6 +141,73 @@ class _RelRow(QFrame):
         super().mousePressEvent(e)
 
 
+from PyQt6.QtCore import QTimer as _LcTimer, Qt as _LcQt
+from PyQt6.QtWidgets import QLabel as _LcLabel, QVBoxLayout as _LcVBox, QWidget as _LcWidget
+
+
+class _LazyComments(_LcWidget):
+    """Light stand-in for InlineComments. QtWebEngine is optional and slow to import
+    (~2.5s), so the real widget is built after the page is shown, or earlier when
+    the comments button is pressed (load_now)."""
+    DELAY_MS = 1200
+    PLACEHOLDER_H = 380  # floor kept for good: placeholder and real widget occupy the same space
+
+    def __init__(self, scroll_getter, media_getter, parent=None):
+        super().__init__(parent)
+        self._args = (scroll_getter, media_getter)
+        self._real = None
+        self._failed = False
+        self._scheduled = False
+        self.setStyleSheet("background: transparent;")
+        self.setMinimumHeight(self.PLACEHOLDER_H)
+        self._lay = _LcVBox(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._ph = _LcWidget(self)
+        pl = _LcVBox(self._ph)
+        pl.setContentsMargins(0, 18, 0, 0)
+        pl.setSpacing(8)
+        title = _LcLabel("Comments")
+        title.setStyleSheet("font-size: 18px; font-weight: 700; color: #ffffff; background: transparent;")
+        self._note = _LcLabel("Loading comments...")
+        self._note.setStyleSheet("font-size: 13px; color: #94a3b8; background: transparent;")
+        pl.addWidget(title)
+        pl.addWidget(self._note)
+        pl.addStretch(1)
+        self._lay.addWidget(self._ph)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        if not self._scheduled and self._real is None and not self._failed:
+            self._scheduled = True
+            _LcTimer.singleShot(self.DELAY_MS, self._build)
+
+    def _build(self):
+        from PyQt6 import sip
+        if sip.isdeleted(self) or self._real is not None or self._failed:
+            return self._real
+        try:
+            from hayate.ui.comments_inline import InlineComments
+            real = InlineComments(self._args[0], self._args[1], self)
+        except Exception:
+            logging.exception("inline comments unavailable")
+            self._failed = True
+            self._note.setText("Comments are unavailable (QtWebEngine could not be loaded).")
+            self.setMinimumHeight(0)
+            return None
+        self._real = real
+        self._lay.removeWidget(self._ph)
+        self._ph.hide()
+        self._ph.deleteLater()
+        self._lay.addWidget(real, 0, _LcQt.AlignmentFlag.AlignTop)
+        real.show()
+        return real
+
+    def load_now(self):
+        real = self._build()
+        if real is not None:
+            real.load_now()
+
+
 class MergedPlayerView(PlayerView):
     """Three columns: episode list | 16:9 video + controls | connected series."""
 
@@ -333,8 +400,10 @@ class MergedPlayerView(PlayerView):
         if detect_playback_platform().embedding != "gl":
             return None
         try:
-            from hayate.ui.comments_inline import InlineComments
-            return InlineComments(
+            import importlib.util
+            if importlib.util.find_spec("PyQt6.QtWebEngineWidgets") is None:
+                return None
+            return _LazyComments(
                 lambda: getattr(self, "page_scroll", None),
                 lambda: (getattr(getattr(self, "anime", None), "id", None), getattr(self, "active_ep", None)),
                 self)

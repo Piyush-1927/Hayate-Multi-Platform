@@ -13,6 +13,20 @@ MOZ_URL = ("https://aus5.mozilla.org/update/3/GMP/140.0/20250601000000/"
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0.0.0"}
 
 
+def _log(*a, file=None):
+    try:
+        d = cache_dir().parent
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / "widevine.log", "a", encoding="utf-8") as f:
+            f.write(" ".join(str(x) for x in a) + "\n")
+    except Exception:
+        pass
+    try:
+        print(*a, file=file)
+    except Exception:
+        pass
+
+
 def _is_arm():
     return platform.machine().lower() in ("arm64", "aarch64")
 
@@ -52,7 +66,7 @@ def _query_mozilla():
     target = _plat()[4]
     raw = _get(MOZ_URL.format(target=target))
     if os.environ.get("WIDEVINE_DEBUG"):
-        print(raw.decode(errors="replace"), file=sys.stderr)
+        _log(raw.decode(errors="replace"), file=sys.stderr)
     root = ET.fromstring(raw)
     for a in root.iter("addon"):
         if a.get("id") == "gmp-widevinecdm":
@@ -102,7 +116,7 @@ def _alt_urls(url):
 def _install_from_chrome_deb() -> Path:
     import tarfile
     url = "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
-    print("[widevine] downloading Chrome .deb (~110 MB) to extract the CDM...",
+    _log("[widevine] downloading Chrome .deb (~110 MB) to extract the CDM...",
           file=sys.stderr)
     deb = _get(url, timeout=900)
     if deb[:8] != b"!<arch>\n":
@@ -147,7 +161,7 @@ def _install(version, url, hash_fn, hash_val) -> Path:
             data = _get(u, timeout=180)
             break
         except Exception as e:
-            print(f"[widevine] {u} -> {e}", file=sys.stderr)
+            _log(f"[widevine] {u} -> {e}", file=sys.stderr)
     if data is None:
         raise RuntimeError("all download URLs failed")
     if hash_val and hashlib.new(hash_fn, data).hexdigest().lower() != hash_val.lower():
@@ -199,14 +213,14 @@ def get_cdm_path(update: bool = False):
             target = cache_dir() / version / _plat()[3]
             return target if target.exists() else _install(version, url, fn, val)
         except Exception as e:
-            print(f"[widevine] {name} source failed: {e}", file=sys.stderr)
+            _log(f"[widevine] {name} source failed: {e}", file=sys.stderr)
     if sys.platform.startswith("linux") and not _is_arm():
         try:
             return _install_from_chrome_deb()
         except Exception as e:
-            print(f"[widevine] chrome-deb source failed: {e}", file=sys.stderr)
+            _log(f"[widevine] chrome-deb source failed: {e}", file=sys.stderr)
     return have
 
 
 if __name__ == "__main__":
-    print(get_cdm_path(update="--update" in sys.argv))
+    _log(get_cdm_path(update="--update" in sys.argv))

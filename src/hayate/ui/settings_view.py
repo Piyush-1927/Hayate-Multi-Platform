@@ -57,6 +57,150 @@ def _ensure_check_icon() -> str:
     return str(icon_path).replace("\\", "/")
 
 
+
+from PyQt6.QtWidgets import (
+    QStackedWidget, QButtonGroup, QHBoxLayout as _QHB, QVBoxLayout as _QVB,
+    QPushButton as _QPB, QWidget as _QW, QScrollArea as _QSA, QFrame as _QF,
+    QLabel as _QL,
+)
+
+_SETTINGS_CATS = [
+    ("general", "General"),
+    ("appearance", "Appearance"),
+    ("storage", "Storage"),
+    ("connections", "Connections"),
+    ("network", "Network && Security"),
+    ("lan", "LAN Streaming"),
+    ("updates", "Updates"),
+]
+_CAT_PLACEHOLDER = {}
+
+
+class _CategoryRouter:
+    """Drop-in for the main QVBoxLayout used while building SettingsView.
+    use(key) picks the category page; addWidget/addLayout then insert into it.
+    build() returns the sidebar + stacked pages widget."""
+
+    def __init__(self, start="general"):
+        self._keys = [k for k, _ in _SETTINGS_CATS]
+        self._shown = start if start in self._keys else "general"
+        self._target = "general"
+        self._layouts = {}
+        self._btns = {}
+        self._stack = QStackedWidget()
+        for key in self._keys:
+            sa = _QSA()
+            sa.setWidgetResizable(True)
+            sa.setFrameShape(_QF.Shape.NoFrame)
+            sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            sa.setStyleSheet("""
+                QScrollArea { border: none; background-color: #171722; }
+                QScrollArea QWidget#qt_scrollarea_viewport {
+                    background-color: #171722; border: none;
+                }
+            """)
+            content = _QW()
+            content.setObjectName("settings_content")
+            content.setStyleSheet(
+                "QWidget#settings_content { background-color: #171722; border: none; }"
+            )
+            lay = _QVB(content)
+            lay.setContentsMargins(24, 12, 40, 24)
+            lay.setSpacing(20)
+            lay.addStretch()
+            sa.setWidget(content)
+            self._stack.addWidget(sa)
+            self._layouts[key] = lay
+
+    # ---- layout-like API -------------------------------------------------
+    def use(self, key):
+        self._target = key
+
+    def addWidget(self, w, *a, **k):
+        lay = self._layouts[self._target]
+        lay.insertWidget(lay.count() - 1, w, *a, **k)
+
+    def addLayout(self, l, *a, **k):
+        lay = self._layouts[self._target]
+        lay.insertLayout(lay.count() - 1, l, *a, **k)
+
+    def addSpacing(self, n):
+        lay = self._layouts[self._target]
+        lay.insertSpacing(lay.count() - 1, n)
+
+    def addStretch(self, *a, **k):
+        pass  # every page already ends with a stretch
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._layouts[self._target], name)
+
+    # ---- sidebar ---------------------------------------------------------
+    def build(self):
+        body = _QW()
+        row = _QHB(body)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+
+        side = _QW()
+        side.setObjectName("settings_sidebar")
+        side.setFixedWidth(230)
+        side.setStyleSheet("""
+            QWidget#settings_sidebar { background-color: #171722; }
+            QPushButton {
+                text-align: left; padding: 0 14px; background: transparent;
+                color: #94a3b8; border: none; border-radius: 8px;
+                font-size: 13px; font-weight: 600;
+            }
+            QPushButton:hover { background-color: #212130; color: #e2e8f0; }
+            QPushButton:checked { background-color: #2d2d42; color: #38bdf8; }
+        """)
+        sl = _QVB(side)
+        sl.setContentsMargins(24, 8, 12, 24)
+        sl.setSpacing(4)
+        self._group = QButtonGroup(side)
+        self._group.setExclusive(True)
+        for key, label in _SETTINGS_CATS:
+            b = _QPB(label)
+            b.setCheckable(True)
+            b.setFixedHeight(38)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: self.show_cat(k))
+            self._group.addButton(b)
+            sl.addWidget(b)
+            self._btns[key] = b
+        sl.addStretch()
+
+        row.addWidget(side)
+        row.addWidget(self._stack, 1)
+        self.show_cat(self._shown, save=False)
+        return body
+
+    def show_cat(self, key, save=True):
+        if key not in self._keys:
+            return
+        self._shown = key
+        self._stack.setCurrentIndex(self._keys.index(key))
+        if key in self._btns:
+            self._btns[key].setChecked(True)
+        if save:
+            try:
+                st = load_settings()
+                st["settings_cat"] = key
+                save_settings(st)
+            except Exception:
+                pass
+
+    def finish(self):
+        """Call after all cards are added: placeholder for empty pages."""
+        for key, lay in self._layouts.items():
+            if lay.count() == 1:
+                lbl = _QL(_CAT_PLACEHOLDER.get(key, "Nothing here yet."))
+                lbl.setStyleSheet("color: #94a3b8; font-size: 13px;")
+                lay.insertWidget(0, lbl)
+
+
 class SettingsView(QWidget):
     back_requested = pyqtSignal()
     settings_changed = pyqtSignal()
@@ -73,34 +217,7 @@ class SettingsView(QWidget):
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
 
-        scroll_area = QScrollArea(self)
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        scroll_area.setStyleSheet("""
-            QScrollArea {
-                border: none;
-                background-color: #171722;
-            }
-            QScrollArea QWidget#qt_scrollarea_viewport {
-                background-color: #171722;
-                border: none;
-            }
-        """)
-
-        content = QWidget()
-        content.setObjectName("settings_content")
-        content.setStyleSheet(
-            "QWidget#settings_content { background-color: #171722; border: none; }"
-        )
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(40, 24, 40, 24)
-        layout.setSpacing(20)
-
-        scroll_area.setWidget(content)
-        outer_layout.addWidget(scroll_area)
+        layout = _CategoryRouter(self.settings.get("settings_cat", "general"))
 
         # Header
         header = QHBoxLayout()
@@ -125,7 +242,9 @@ class SettingsView(QWidget):
         title.setStyleSheet("font-size: 22px; font-weight: 800; color: #ffffff;")
         header.addWidget(title)
         header.addStretch()
-        layout.addLayout(header)
+        header.setContentsMargins(40, 24, 40, 12)
+        outer_layout.addLayout(header)
+        outer_layout.addWidget(layout.build(), 1)
 
         # Card 1: Streaming Source / Provider
         card_prov = self._create_card("Streaming Provider")
@@ -219,6 +338,7 @@ class SettingsView(QWidget):
         row_prov.addStretch()
 
         p_layout.addLayout(row_prov)
+        layout.use("general")
         layout.addWidget(card_prov)
 
         # Card 2: Content Filtering (18+ / NSFW)
@@ -257,6 +377,7 @@ class SettingsView(QWidget):
         """)
         self.adult_checkbox.clicked.connect(self._on_adult_toggled)
         c_layout.addWidget(self.adult_checkbox)
+        layout.use("general")
         layout.addWidget(card_content)
 
         # Catalogue card
@@ -273,21 +394,23 @@ class SettingsView(QWidget):
         self.cat_link_check.setStyleSheet(_orig_ss(self.adult_checkbox))
         self.cat_link_check.toggled.connect(self._on_cat_link_toggled)
         cat_layout.addWidget(self.cat_link_check)
+        layout.use("general")
         layout.addWidget(card_cat)
 
         # Player card
         card_mv = self._create_card("Player")
         mv_layout = QVBoxLayout(card_mv)
         mv_layout.setContentsMargins(24, 20, 24, 20); mv_layout.setSpacing(12)
-        mv_desc = QLabel("When on, the player and the details page are shown together on one page.")
+        mv_desc = QLabel("By default the player and the details page are shown together on one page. Turn this on to use separate pages instead.")
         mv_desc.setStyleSheet("color: #94a3b8; font-size: 12px;"); mv_desc.setWordWrap(True)
         mv_layout.addWidget(mv_desc)
-        self.merged_view_check = QCheckBox("Merged player & details view")
+        self.merged_view_check = QCheckBox("Classic view (separate details and player pages)")
         self.merged_view_check.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.merged_view_check.setChecked(bool(load_settings().get("merged_view", False)))
+        self.merged_view_check.setChecked(bool(load_settings().get("classic_view", False)))
         self.merged_view_check.setStyleSheet(_orig_ss(self.adult_checkbox))
         self.merged_view_check.toggled.connect(self._on_merged_view_toggled)
         mv_layout.addWidget(self.merged_view_check)
+        layout.use("general")
         layout.addWidget(card_mv)
 
         # Banner transition card
@@ -375,9 +498,11 @@ class SettingsView(QWidget):
                 QSlider::sub-page:horizontal { background: #38bdf8; border-radius: 2px; }
                 QSlider::handle:horizontal { background: #38bdf8; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }
             """)
+        layout.use("appearance")
         layout.addWidget(card_tr)
 
         from hayate.core.theme import AppearanceLauncherCard
+        layout.use("appearance")
         layout.addWidget(AppearanceLauncherCard())
         # Card: Cache
         from hayate.ui.cache_slider import ClickOnlySlider
@@ -411,6 +536,7 @@ class SettingsView(QWidget):
         cs_row.addWidget(self.cache_slider, 1)
         cs_row.addWidget(self.cache_lbl)
         cc.addLayout(cs_row)
+        layout.use("storage")
         layout.addWidget(card_cache)
 
         # Card 3: Watch History & Backup
@@ -477,6 +603,7 @@ class SettingsView(QWidget):
             h_btns2.addWidget(_b)
         h_btns2.addStretch()
         h_layout.addLayout(h_btns2)
+        layout.use("storage")
         layout.addWidget(card_hist)
 
         # Card: Default Audio
@@ -500,6 +627,7 @@ class SettingsView(QWidget):
         self._fill_def_audio()
         self.def_audio_combo.currentIndexChanged.connect(self._on_def_audio_changed)
         self.custom_dub_edit.editingFinished.connect(self._on_custom_dub_edited)
+        layout.use("general")
         layout.addWidget(self.card_audio)
 
         # Card: Cloud Sync (bring your own cloud)
@@ -570,6 +698,7 @@ class SettingsView(QWidget):
         self.g_btn.clicked.connect(self._on_google_btn)
         self.cloud_sync_btn.clicked.connect(self._cloud_sync_now)
         self._on_cloud_changed()
+        layout.use("connections")
         layout.addWidget(self.card_cloud)
 
         # Card: Network & Privacy (always shown; the Tor toggle only appears if Tor is available)
@@ -603,6 +732,7 @@ class SettingsView(QWidget):
         self.net_status = QLabel("")
         self.net_status.setWordWrap(True)
         n_layout.addWidget(self.net_status)
+        layout.use("network")
         layout.addWidget(self.card_net)
         self._refresh_network()
 
@@ -666,6 +796,7 @@ class SettingsView(QWidget):
         cache_layout.addWidget(self.clear_cookies_btn)
         cc_desc.setVisible(False)
         self.clear_cookies_btn.setVisible(False)  # hidden until the in-session clear works
+        layout.use("storage")
         layout.addWidget(card_cache)
 
         # Card 5: Local Network Sharing (LAN)
@@ -758,6 +889,7 @@ class SettingsView(QWidget):
         row_ui.addStretch()
         lan_layout.addLayout(row_ui)
 
+        layout.use("lan")
         layout.addWidget(card_lan)
 
 
@@ -771,6 +903,125 @@ class SettingsView(QWidget):
         # Populate combo box initially
         self.refresh_providers()
         self._lock_wheel()
+        layout.use("updates")
+        card_upd = self._create_card("Updates")
+
+        # ── detect build type ────────────────────────────────────────────────
+        import sys, os as _os
+        from PyQt6.QtWidgets import QSizePolicy
+        from hayate.core.updater import current_version
+
+        def _build_label() -> str:
+            if getattr(sys, "frozen", False):
+                exe = sys.executable.lower()
+                if "portable" in exe:
+                    return "Windows · Portable"
+                return "Windows · Installer"
+            if _os.environ.get("FLATPAK_ID"):
+                return "Linux · Flatpak"
+            if _os.environ.get("SNAP"):
+                return "Linux · Snap"
+            if _os.environ.get("APPIMAGE"):
+                return "Linux · AppImage"
+            if _os.environ.get("PIPX_HOME") or _os.environ.get("PIPX_BIN_DIR"):
+                return "Python · pipx"
+            if sys.platform == "win32":
+                return "Windows · Python"
+            if sys.platform == "darwin":
+                return "macOS · Python"
+            return "Linux · Python"
+
+        # Card must not grow to fill the scroll area vertically
+        card_upd.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+
+        # ── layout: left = actions, right = version info ─────────────────────
+        u_root = QHBoxLayout(card_upd)
+        u_root.setContentsMargins(22, 18, 22, 18)
+        u_root.setSpacing(24)
+        u_root.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        # left column ── actions (no stretch — card sizes to content)
+        u_left = QVBoxLayout()
+        u_left.setSpacing(10)
+        u_left.setAlignment(Qt.AlignmentFlag.AlignTop)
+        _btn_css = ("QPushButton { background-color: #212130; color: #e2e8f0; "
+                    "border: 1.5px solid #3d3d52; border-radius: 8px; "
+                    "padding: 0 16px; font-weight: 600; } "
+                    "QPushButton:hover { background-color: #2d2d42; } "
+                    "QPushButton:disabled { color: #64748b; }")
+        self.upd_btn = _ic(QPushButton("Check for updates"), "refresh-cw")
+        self.upd_btn.setFixedHeight(36)
+        self.upd_btn.setMaximumWidth(200)
+        self.upd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.upd_btn.setStyleSheet(_btn_css)
+        u_left.addWidget(self.upd_btn)
+
+        self.upd_status = QLabel("")
+        self.upd_status.setWordWrap(True)
+        self.upd_status.setStyleSheet("color: #e2e8f0; font-size: 13px;")
+        u_left.addWidget(self.upd_status)
+
+        self.upd_open = QPushButton("Open release page")
+        self.upd_open.setFixedHeight(36)
+        self.upd_open.setMaximumWidth(200)
+        self.upd_open.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.upd_open.setStyleSheet(_btn_css)
+        self.upd_open.hide()
+        u_left.addWidget(self.upd_open)
+
+        # right column ── version info
+        # Colours intentionally avoid the #94a3b8 + font-size:12px combo
+        # so polish_settings/infobtn does not hide them into the i-popup.
+        u_right = QVBoxLayout()
+        u_right.setSpacing(4)
+        u_right.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        ver_lbl = QLabel("v" + current_version())
+        ver_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        ver_lbl.setStyleSheet("color: #e2e8f0; font-size: 20px; font-weight: 700;")
+        u_right.addWidget(ver_lbl)
+
+        build_lbl = QLabel(_build_label())
+        build_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        build_lbl.setStyleSheet("color: #64748b; font-size: 11px; font-weight: 500;")
+        u_right.addWidget(build_lbl)
+
+        u_root.addLayout(u_right)
+        u_root.addLayout(u_left, 1)
+
+        # ── wire up callbacks ─────────────────────────────────────────────────
+        self._upd_url = ""
+
+        def _open_release():
+            from PyQt6.QtGui import QDesktopServices
+            from PyQt6.QtCore import QUrl
+            if self._upd_url:
+                QDesktopServices.openUrl(QUrl(self._upd_url))
+        self.upd_open.clicked.connect(_open_release)
+
+        def _on_upd_done(status, tag, url, notes):
+            self.upd_btn.setEnabled(True)
+            if status == "new":
+                self._upd_url = url
+                self.upd_status.setText("Update available: " + tag)
+                self.upd_open.show()
+            elif status == "latest":
+                self.upd_status.setText("You're up to date.")
+            else:
+                self.upd_status.setText("Couldn't check for updates: " + notes)
+
+        def _check_updates():
+            from hayate.core.updater import UpdateChecker
+            self.upd_btn.setEnabled(False)
+            self.upd_open.hide()
+            self.upd_status.setText("Checking...")
+            self._upd_thread = UpdateChecker()
+            self._upd_thread.done.connect(_on_upd_done)
+            self._upd_thread.start()
+        self.upd_btn.clicked.connect(_check_updates)
+
+        layout.addWidget(card_upd)
+        layout.finish()
         from hayate.ui.infobtn import polish_settings
         polish_settings(self)
 
@@ -996,6 +1247,7 @@ class SettingsView(QWidget):
         card = QFrame()
         card.setObjectName("settings_card")
         card.setProperty("card", True)
+        card.setProperty("card_title", title_text)
         return card
 
     def _on_refresh_clicked(self):
@@ -1143,7 +1395,7 @@ class SettingsView(QWidget):
     def _on_merged_view_toggled(self, on):
         from hayate.core.settings import load_settings as _ld, save_settings as _sv
         st = _ld()
-        st["merged_view"] = bool(on)
+        st["classic_view"] = bool(on)
         _sv(st)
 
     def _on_cat_link_toggled(self, on):

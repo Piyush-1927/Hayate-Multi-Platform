@@ -90,6 +90,10 @@ class _Manager(QObject):
         self.timer.stop()
         self.entries.clear()
 
+    def _wake(self, *_):
+        if self.timer.interval() != TICK_MS:
+            self.timer.setInterval(TICK_MS)
+
     def _scan(self):
         for top in self.app.topLevelWidgets():
             for sb in top.findChildren(QScrollBar):
@@ -100,6 +104,8 @@ class _Manager(QObject):
                     area = area.parent()
                 if area is not None:
                     self.entries[sb] = _Entry(sb, area)
+                    sb.valueChanged.connect(self._wake)
+                    sb.rangeChanged.connect(self._wake)
 
     def _tick(self):
         now = time.monotonic()
@@ -111,6 +117,7 @@ class _Manager(QObject):
             self._scan()
 
         dead = []
+        busy = False
         for sb, e in self.entries.items():
             if sip.isdeleted(sb) or sip.isdeleted(e.area):
                 dead.append(sb)
@@ -134,6 +141,7 @@ class _Manager(QObject):
             if not want and ov.alpha == 0.0:
                 continue
 
+            busy = True
             rect = QRect(sb.mapTo(e.area, QPoint(0, 0)), sb.size())
             if ov.geometry() != rect:
                 ov.setGeometry(rect)
@@ -151,6 +159,9 @@ class _Manager(QObject):
                 ov.hide()
         for sb in dead:
             self.entries.pop(sb, None)
+        iv = TICK_MS if busy else 250
+        if self.timer.interval() != iv:
+            self.timer.setInterval(iv)
 
 
 def install(app):

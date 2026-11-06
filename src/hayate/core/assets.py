@@ -39,7 +39,7 @@ def _pix(name, size, color):
 
 _MAP = {"\u2190": "arrow-left", "\U0001F441": "eye", "\u25B6": "play", "\u23F8": "pause", "\u2661": "heart", "\u2665": "heart-fill",
         "\u2764": "heart-fill", "\u2715": "x", "\u2699": "settings", "\u21BB": "refresh-cw", "\u2B07": "download",
-        "\u23EA": "rewind", "\u23E9": "fast-forward", "\U0001F50A": "volume-2", "\U0001F507": "volume-x", "\u26F6": "maximize"}
+        "\u23EA": "rewind", "\u23E9": "fast-forward", "\U0001F50A": "volume-2", "\U0001F507": "volume-x", "\u26F6": "maximize", "\U0001F4AC": "message-square", "\U0001F5E8": "message-square"}
 
 
 def _guard(w):

@@ -59,6 +59,12 @@ def main():
   _autoscale()
   from PyQt6.QtCore import Qt as _Qt, QCoreApplication as _QCA
   _QCA.setAttribute(_Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+  if sys.platform == "win32":
+    try:
+      import ctypes
+      ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Hayate.App")
+    except Exception:
+      pass
   app = QApplication(sys.argv)
 
   from hayate.core.theme import theme
@@ -67,9 +73,11 @@ def main():
     app.setStyleSheet(theme.qss() + SCROLLBAR_QSS)
   _apply_qss()
   theme.changed.connect(_apply_qss)
-  install_autohide_scrollbar(app)
-  icon_file = Path(__file__).resolve().parents[2] / 'app_icon.png'
-  if icon_file.exists():
+  if not __import__('os').environ.get('HAYATE_NO_AUTOHIDE'):
+    install_autohide_scrollbar(app)
+  _base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+  icon_file = next((_base / n for n in ("hayate.ico", "app_icon.png") if (_base / n).exists()), None)
+  if icon_file:
       app.setWindowIcon(QIcon(str(icon_file)))
   elif not QIcon.fromTheme("hayate").isNull():
       app.setWindowIcon(QIcon.fromTheme("hayate"))

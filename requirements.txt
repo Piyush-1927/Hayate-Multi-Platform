@@ -4,3 +4,4 @@ yt-dlp>=2023.0.0
 python-mpv>=1.0.7
 httpx>=0.25.0
 certifi
+PyQt6-WebEngine>=6.5.0

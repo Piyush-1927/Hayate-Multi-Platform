@@ -1144,9 +1144,16 @@ class PlayerView(QWidget):
         self._cloud_sync()
 
     def _show_web(self, target):
-        from hayate.core.web_embed import WEB_OK
-        if not WEB_OK:
-            self._on_stream_error("Web player unavailable (QtWebEngine or Widevine CDM missing).")
+        from hayate.core import web_embed as W
+        if not W.WEB_OK:
+            self._on_stream_error("Web player unavailable (QtWebEngine missing).")
+            return
+        if not W.cdm_path():
+            if not getattr(self, "_cdm_busy", False):
+                self._cdm_busy, self._cdm_target = True, target
+                self.placeholder_label.setText("Installing Widevine (one-time download)...")
+                self.placeholder_label.show()
+                W.install_cdm_async(self._cdm_installed)
             return
         try:
             pm = self.media_player
@@ -1164,6 +1171,18 @@ class PlayerView(QWidget):
             self._set_web_chrome(True)
         except Exception as exc:
             self._on_stream_error(f"Web player failed: {exc}")
+
+    def _cdm_installed(self, path):
+        self._cdm_busy = False
+        if not path:
+            self._on_stream_error("Widevine download failed. See widevine.log in the Hayate cache folder, then try again.")
+            return
+        from hayate.core import web_embed as W
+        W.apply_cdm_flag(path)
+        if W.engine_started():
+            self._on_stream_error("Widevine installed. Restart Hayate once to enable it.")
+            return
+        self._show_web(self._cdm_target)
 
     def _web_active(self):
         w = getattr(self, "_web", None)

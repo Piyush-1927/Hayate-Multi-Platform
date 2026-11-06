@@ -9,26 +9,66 @@ _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
        "Chrome/124.0.0.0 Safari/537.36")
 
 
-def _find_cdm():
-    # App-managed copy (downloaded once, cached under ~/.cache/hayate/widevine)
+def cdm_path():
+    """Installed CDM only; never touches the network."""
     try:
-        from .widevine_cdm import get_cdm_path
-        p = get_cdm_path()
+        from .widevine_cdm import _cached
+        p = _cached()
         if p and os.path.exists(p):
             return str(p)
-    except Exception as e:
-        print("[web] widevine fetch failed:", e, flush=True)
-    # Fallback: system-installed Chromium/Chrome
-    c = ["/usr/lib/chromium/WidevineCdm/_platform_specific/linux_x64/libwidevinecdm.so",
-         "/opt/google/chrome/WidevineCdm/_platform_specific/linux_x64/libwidevinecdm.so"]
-    c += glob.glob("/usr/lib/**/libwidevinecdm.so", recursive=True)
-    return next((p for p in c if os.path.exists(p)), None)
+    except Exception:
+        pass
+    if sys.platform.startswith("linux"):
+        c = ["/usr/lib/chromium/WidevineCdm/_platform_specific/linux_x64/libwidevinecdm.so",
+             "/opt/google/chrome/WidevineCdm/_platform_specific/linux_x64/libwidevinecdm.so"]
+        c += glob.glob("/usr/lib/**/libwidevinecdm.so", recursive=True)
+        return next((p for p in c if os.path.exists(p)), None)
+    return None
 
 
-_cdm = _find_cdm() if sys.platform.startswith(("linux", "win")) else None
+def apply_cdm_flag(p):
+    cur = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+    if "--widevine-path" not in cur:
+        flag = '--widevine-path="%s"' % str(p).replace(os.sep, "/")
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (cur + " " + flag).strip()
+
+
+def engine_started():
+    return globals().get("_PROFILE") is not None
+
+
+_keep = []
+
+
+def install_cdm_async(on_done):
+    """Download the CDM off the UI thread. on_done(path_or_None) must be a QObject bound method."""
+    import threading
+    from PyQt6.QtCore import QObject, pyqtSignal
+
+    class _R(QObject):
+        done = pyqtSignal(object)
+
+    r = _R()
+    r.done.connect(on_done)
+    _keep.append(r)
+
+    def work():
+        p = None
+        try:
+            from .widevine_cdm import get_cdm_path
+            p = get_cdm_path()
+        except Exception as e:
+            from .widevine_cdm import _log
+            _log("[widevine] install failed:", e)
+        r.done.emit(str(p) if p else None)
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+_cdm = cdm_path() if sys.platform.startswith(("linux", "win")) else None
 if _cdm:
-    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
-        os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "") + f' --widevine-path="{_cdm}"').strip()
+    apply_cdm_flag(_cdm)
+if sys.platform.startswith(("linux", "win")):
     try:
         from PyQt6.QtCore import QUrl
         from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage, QWebEngineSettings

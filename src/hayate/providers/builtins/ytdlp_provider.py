@@ -55,6 +55,17 @@ OFFICIAL_CHANNELS = {
 _NOWIN = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
 
+def _ylog(*a):
+    """Append to <config>/ytdlp.log (windowed builds have no console)."""
+    try:
+        import time
+        from hayate.core.settings import config_dir
+        with open(config_dir() / "ytdlp.log", "a", encoding="utf-8") as f:
+            f.write(time.strftime("%H:%M:%S ") + " ".join(str(x) for x in a) + "\n")
+    except Exception:
+        pass
+
+
 class YtDlpProvider(StreamProvider):
     name = "ytdlp"
     label = "Official Licensors (YouTube)"
@@ -169,7 +180,7 @@ class YtDlpProvider(StreamProvider):
             try:
                 r = subprocess.run([exe, *net.ytdlp_args(), "--flat-playlist", "--no-warnings", "-j",
                                     f"ytsearch10:{base}{extra}"],
-                                   capture_output=True, text=True, timeout=20, **_NOWIN)
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, **_NOWIN)
             except Exception:
                 continue
             if r.returncode != 0 and not r.stdout.strip():
@@ -190,6 +201,7 @@ class YtDlpProvider(StreamProvider):
 
     def get_stream(self, title: str, episode: int, dub=False, quality="best"):
         ytdlp_bin = self._find_ytdlp()
+        _ylog("exe", ytdlp_bin)
         if not ytdlp_bin:
             return None
 
@@ -214,7 +226,8 @@ class YtDlpProvider(StreamProvider):
         matched_uploader = ""
 
         try:
-            res = subprocess.run(scan_cmd[:1] + net.ytdlp_args() + scan_cmd[1:], capture_output=True, text=True, timeout=8, **_NOWIN)
+            res = subprocess.run(scan_cmd[:1] + net.ytdlp_args() + scan_cmd[1:], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, **_NOWIN)
+            _ylog("scan rc", res.returncode, "out", len(res.stdout or ""), "err", (res.stderr or "")[-200:], "q", query)
             if res.returncode == 0 and res.stdout.strip():
                 for line in res.stdout.strip().splitlines():
                     try:
@@ -233,6 +246,23 @@ class YtDlpProvider(StreamProvider):
                         matched_title = v_title
                         matched_uploader = uploader or channel
                         break
+
+            if not target_url and not found_langs and want != "sub":
+                try:
+                    r2 = subprocess.run([ytdlp_bin, *net.ytdlp_args(), "--flat-playlist", "--no-warnings", "-j",
+                                         f"ytsearch10:{clean} episode {episode}"],
+                                        capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                        timeout=30, **_NOWIN)
+                    _ylog("fallback scan rc", r2.returncode, "out", len(r2.stdout or ""))
+                    for ln in (r2.stdout or "").splitlines():
+                        try:
+                            d = json.loads(ln)
+                        except Exception:
+                            continue
+                        if self._usable(d, title, episode):
+                            found_langs.add(self._lang(d, custom))
+                except Exception as e:
+                    _ylog("fallback scan failed", repr(e))
 
             # If no official channel uploaded this episode, return None cleanly
             if not target_url:
@@ -257,7 +287,8 @@ class YtDlpProvider(StreamProvider):
                 "-j",
                 target_url,
             ]
-            ext_res = subprocess.run(extract_cmd[:1] + net.ytdlp_args() + extract_cmd[1:], capture_output=True, text=True, timeout=12, **_NOWIN)
+            ext_res = subprocess.run(extract_cmd[:1] + net.ytdlp_args() + extract_cmd[1:], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=40, **_NOWIN)
+            _ylog("extract rc", ext_res.returncode, "err", (ext_res.stderr or "")[-200:])
             if ext_res.returncode == 0 and ext_res.stdout.strip():
                 meta = json.loads(ext_res.stdout.strip().splitlines()[0])
                 direct_url = meta.get("url")
@@ -270,6 +301,8 @@ class YtDlpProvider(StreamProvider):
 
         except Exception as e:
             print(f"[yt-dlp official provider error]: {e}")
+            _ylog("ERROR", repr(e))
+            self.last_notice = f"yt-dlp failed: {e}"
 
         return None
 
@@ -308,7 +341,7 @@ class YtDlpProvider(StreamProvider):
         for url in self._channel_urls():
             try:
                 r = subprocess.run([exe, *net.ytdlp_args(), "--flat-playlist", "-J", "--no-warnings", url.rstrip("/") + "/playlists"],
-                                   capture_output=True, text=True, timeout=90, **_NOWIN)
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90, **_NOWIN)
                 _d = json.loads(r.stdout)
                 entries = _d.get("entries") or []
                 _chan = (_d.get("channel") or _d.get("uploader") or _d.get("title") or "")
@@ -391,6 +424,7 @@ class YtDlpProvider(StreamProvider):
 
     def _warm_langs(self):
         """Startup: make sure the language index exists (scans the channels if it's missing or stale)."""
+        import time; time.sleep(30)
         try:
             with self._cat_lock:
                 if self._load_lang_idx():
