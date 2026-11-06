@@ -1,5 +1,5 @@
-﻿#define AppName "Hayate"
-#define AppVersion "0.2.9"
+#define AppName "Hayate"
+#define AppVersion "0.3.0"
 #define WebUrl "https://github.com/Piyush-1927/Hayate-Multi-Platform/releases/download/webengine-addon/Hayate-WebEngine-addon.zip"
 #include "webengine-hash.iss"
 
