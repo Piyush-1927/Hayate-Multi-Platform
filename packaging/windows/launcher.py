@@ -1,4 +1,11 @@
+import os
 import sys
+
+if sys.platform == "win32":
+    # merged player (QQuickWidget) needs the OpenGL RHI backend; must be set before Qt loads
+    os.environ.setdefault("QSG_RHI_BACKEND", "opengl")
+    os.environ.setdefault("QT_WIDGETS_RHI", "1")
+    os.environ.setdefault("QT_WIDGETS_RHI_BACKEND", "opengl")
 
 
 def _child_mode():

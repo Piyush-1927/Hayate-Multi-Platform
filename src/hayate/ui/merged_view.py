@@ -609,9 +609,8 @@ class MergedPlayerView(PlayerView):
             return
         enter = not self.window().isFullScreen()
         rel = getattr(self, "rel_panel", None)
+        col = getattr(self, "rel_col", None)
         others = [x for x in (getattr(self, "_info_widget", None), getattr(self, "_cmt_inline", None)) if x is not None]
-        cv = self.card_viewport
-        h0 = cv.height()
         if getattr(self, "_fs_a", None) is not None:
             self._fs_a.stop()
         old = getattr(self, "_fs_ov", None)
@@ -619,7 +618,8 @@ class MergedPlayerView(PlayerView):
             old.deleteLater()
         ov = QLabel(self)
         ov.setPixmap(self.grab())
-        ov.setScaledContents(True)
+        ov.setScaledContents(False)
+        ov.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         ov.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         ov.setGeometry(self.rect())
         eff = QGraphicsOpacityEffect(ov)
@@ -631,8 +631,13 @@ class MergedPlayerView(PlayerView):
         if enter:
             self._fs_hidden = {x: x.isHidden() for x in others}
             self._fs_rel_hidden = rel is None or rel.isHidden()
+            self._fs_col_hidden = col is None or col.isHidden()
             for x in others:
                 x.hide()
+            if rel is not None:
+                rel.hide()
+            if col is not None:
+                col.hide()
             self.page_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             self.page_scroll.verticalScrollBar().setValue(0)
             self.page_scroll.viewport().installEventFilter(self)
@@ -642,48 +647,40 @@ class MergedPlayerView(PlayerView):
             for x in others:
                 x.setVisible(not getattr(self, "_fs_hidden", {}).get(x, False))
             self.page_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            if col is not None and not getattr(self, "_fs_col_hidden", True):
+                col.show()
             if rel is not None and not getattr(self, "_fs_rel_hidden", True):
-                rel.setFixedWidth(0)
                 rel.show()
-        rel_vis = rel is not None and not getattr(self, "_fs_rel_hidden", True)
         super()._toggle_fullscreen()
 
-        def tgt():
-            return self.page_scroll.viewport().height() if self._fs_on else round(cv.width() * 9 / 16)
-
-        def step(v):
+        def fade():
             if sip.isdeleted(self) or sip.isdeleted(ov):
                 return
-            t = tgt()
-            if t > 0:
-                cv.setFixedHeight(int(h0 + (t - h0) * v))
-            if rel_vis:
-                rel.setFixedWidth(int(340 * ((1 - v) if enter else v)))
+            self._fs_anim = False
+            self._fs_fit()
             ov.setGeometry(self.rect())
-            eff.setOpacity(max(0.0, 1.0 - v))
             ov.raise_()
 
-        def fin():
-            if sip.isdeleted(self):
-                return
-            self._fs_anim = False
-            if not sip.isdeleted(ov):
-                ov.deleteLater()
-            if rel is not None:
-                rel.setFixedWidth(340)
-                if enter:
-                    rel.hide()
-            self._fs_fit()
+            def step(v):
+                if sip.isdeleted(ov):
+                    return
+                eff.setOpacity(max(0.0, 1.0 - v))
 
-        an = QVariantAnimation(self)
-        an.setDuration(380)
-        an.setStartValue(0.0)
-        an.setEndValue(1.0)
-        an.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        an.valueChanged.connect(step)
-        an.finished.connect(fin)
-        self._fs_a = an
-        QTimer.singleShot(60, an.start)
+            def fin():
+                if not sip.isdeleted(ov):
+                    ov.deleteLater()
+
+            an = QVariantAnimation(self)
+            an.setDuration(260)
+            an.setStartValue(0.0)
+            an.setEndValue(1.0)
+            an.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            an.valueChanged.connect(step)
+            an.finished.connect(fin)
+            self._fs_a = an
+            an.start()
+
+        QTimer.singleShot(120, fade)
 
     def _fs_fit(self):
         from PyQt6 import sip

@@ -1,4 +1,4 @@
-﻿param([switch]$Console, [switch]$AllowNoMpv)
+param([switch]$Console, [switch]$AllowNoMpv)
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path "$PSScriptRoot\..\..").Path
 Set-Location $root
@@ -18,6 +18,7 @@ $mode = if ($Console) { "--console" } else { "--windowed" }
   --add-data "$root\src\hayate\assets;hayate\assets" `
   --add-data "$PSScriptRoot\hayate.ico;." `
   --add-data "$root\app_icon.png;." `
+  --add-data "$root\pyproject.toml;." `
   --hidden-import PyQt6.QtSvg `
   --paths "$root\src" `
   --collect-submodules hayate `

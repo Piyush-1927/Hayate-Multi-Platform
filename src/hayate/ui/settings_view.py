@@ -242,6 +242,7 @@ class SettingsView(QWidget):
         title.setStyleSheet("font-size: 22px; font-weight: 800; color: #ffffff;")
         header.addWidget(title)
         header.addStretch()
+        header.setSpacing(16)
         header.setContentsMargins(40, 24, 40, 12)
         outer_layout.addLayout(header)
         outer_layout.addWidget(layout.build(), 1)
@@ -986,8 +987,13 @@ class SettingsView(QWidget):
         build_lbl.setStyleSheet("color: #64748b; font-size: 11px; font-weight: 500;")
         u_right.addWidget(build_lbl)
 
+        for _l in (ver_lbl, build_lbl):
+            _l.ensurePolished()
+            _l.setMinimumWidth(_l.sizeHint().width())
+        self.upd_status.setMinimumWidth(200)
         u_root.addLayout(u_right)
-        u_root.addLayout(u_left, 1)
+        u_root.addStretch(1)
+        u_root.addLayout(u_left)
 
         # ── wire up callbacks ─────────────────────────────────────────────────
         self._upd_url = ""

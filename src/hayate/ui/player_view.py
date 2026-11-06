@@ -1295,7 +1295,7 @@ class PlayerView(QWidget):
             self.skip_btn.setText("Skip Intro" if kind == "op" else "Skip Outro")
             self.skip_btn.adjustSize()
             self.skip_btn.setFixedHeight(40)
-        vc = self.findChild(VideoOverlayWidget)
+        vc = (self.skip_btn.parentWidget() if getattr(self, '_skip_in_video', False) else None) or self.findChild(VideoOverlayWidget)
         if vc is not None:
             lift = 110 if self.window().isFullScreen() else 28
             if getattr(self, "_skip_in_video", False):
